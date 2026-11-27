@@ -17,6 +17,7 @@ public sealed class OobDetectionService(
     IAuditService audit,
     IEmailNotifier email,
     IGpoDirectoryService directory,
+    ISmtpSettingsService smtpSettings,
     IConfiguration config,
     ILogger<OobDetectionService> logger) : IOobDetectionService
 {
@@ -194,11 +195,16 @@ public sealed class OobDetectionService(
 
     private async Task NotifyAsync(ControlledGpo gpo, OobDetection detection, CancellationToken ct)
     {
-        var recipients = config.GetSection("Oob:AlertRecipients").GetChildren()
+        var recipients = smtpSettings.GetRuntime().AlertRecipients.ToArray();
+        if (recipients.Length == 0)
+        {
+            recipients = config.GetSection("Oob:AlertRecipients").GetChildren()
                              .Select(c => c.Value)
                              .Where(v => !string.IsNullOrWhiteSpace(v))
                              .Cast<string>()
                              .ToArray();
+        }
+
         if (recipients.Length == 0)
         {
             recipients = ["gpd-admins@contoso.local"];

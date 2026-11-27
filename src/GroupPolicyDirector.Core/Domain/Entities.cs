@@ -131,3 +131,110 @@ public sealed class PolicySettingUpdate
     public string? State { get; init; }
     public string? Value { get; init; }
 }
+
+/// <summary>AD container under GPD control (OU, Domain, or Site) for gpLink change-control.</summary>
+public enum AdContainerKind
+{
+    OrganizationalUnit = 1,
+    Domain = 2,
+    Site = 3
+}
+
+public sealed class ControlledContainer
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid DomainId { get; init; }
+    public AdContainerKind Kind { get; init; }
+    /// <summary>Stable key: OU/Domain DN or Site CN=Name,CN=Sites,CN=Configuration,...</summary>
+    public required string ContainerKey { get; init; }
+    public required string DisplayName { get; init; }
+    public ControlledGpoStatus Status { get; set; } = ControlledGpoStatus.UnderControl;
+    public string? CheckedOutBy { get; set; }
+    public DateTimeOffset? CheckedOutAt { get; set; }
+    public string? LinksHash { get; set; }
+    public DateTimeOffset TakenControlAt { get; init; } = DateTimeOffset.UtcNow;
+    public string? TakenControlBy { get; init; }
+    public Guid? PendingVersionId { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTimeOffset? ApprovedAt { get; set; }
+}
+
+/// <summary>One GPO link on a container (gpLink entry).</summary>
+public sealed class GpoLinkEntry
+{
+    public required string GpoId { get; set; }
+    public string? DisplayName { get; set; }
+    /// <summary>0 = highest precedence (leftmost / first in gpLink).</summary>
+    public int Order { get; set; }
+    public bool Enforced { get; set; }
+    public bool Disabled { get; set; }
+}
+
+/// <summary>Editable link set for a controlled container (working copy or snapshot).</summary>
+public sealed class ContainerLinksState
+{
+    public bool BlockInheritance { get; set; }
+    public List<GpoLinkEntry> Links { get; set; } = [];
+}
+
+public sealed class ContainerVersion
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid ControlledContainerId { get; init; }
+    public int VersionNumber { get; init; }
+    public required string Comment { get; init; }
+    public required string CreatedBy { get; init; }
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+    public string? LinksSnapshotJson { get; init; }
+    public string? LinksHash { get; init; }
+    public string? Provenance { get; init; }
+    public string? WorkflowState { get; set; }
+    public string? ReviewedBy { get; set; }
+    public string? ReviewComment { get; set; }
+}
+
+/// <summary>Unified settings or links diff line for History UI.</summary>
+public sealed class DiffChange
+{
+    public required string Path { get; init; }
+    public required string Kind { get; init; } // Added | Removed | Changed
+    public string? Before { get; init; }
+    public string? After { get; init; }
+}
+
+public sealed class VersionDiffResult
+{
+    public int FromVersion { get; init; }
+    public int ToVersion { get; init; }
+    public required string ObjectKey { get; init; }
+    public required string ObjectType { get; init; } // Gpo | Container
+    public IReadOnlyList<DiffChange> Changes { get; init; } = [];
+}
+
+/// <summary>Runtime SMTP settings overlay (Slice 5 polish). Password never returned to UI.</summary>
+public sealed class SmtpSettingsView
+{
+    public string Host { get; init; } = "";
+    public int Port { get; init; } = 25;
+    public string From { get; init; } = "";
+    public bool UseSsl { get; init; }
+    public string User { get; init; } = "";
+    public bool PasswordConfigured { get; init; }
+    public bool UseDefaultCredentials { get; init; }
+    public bool IsConfigured { get; init; }
+    public IReadOnlyList<string> AlertRecipients { get; init; } = [];
+    public string Mode { get; init; } = "LogOnly"; // LogOnly | Smtp
+    public bool AutoResetEnabled { get; init; } // always false in MVP
+}
+
+public sealed class SmtpSettingsUpdate
+{
+    public string? Host { get; init; }
+    public int? Port { get; init; }
+    public string? From { get; init; }
+    public bool? UseSsl { get; init; }
+    public string? User { get; init; }
+    public string? Password { get; init; }
+    public bool? UseDefaultCredentials { get; init; }
+    public List<string>? AlertRecipients { get; init; }
+}

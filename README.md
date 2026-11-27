@@ -1,7 +1,7 @@
 # Group Policy Director
 
 Moderner AGPM-Nachfolger mit Change-Control für Group Policy (on-prem first).  
-**Slice 4:** AGPM-Archiv Dry-Run (Parser + Report) und Admin-UI für OU/GPO-Delegation an AD-Rollengruppen — auf Slice 3 (AD Temp-GPO / OOB SMTP).
+**Slice 5:** AD Container-Links (OU/Site/Domain gpLink) unter Take Control + Checkout/Approve/Deploy, History/Diff-UI, SMTP-Polish für OOB (kein Auto-Reset). Branding: **Referenz-Tools**.
 
 ## Struktur
 
@@ -13,7 +13,7 @@ src/GroupPolicyDirector.Infrastructure/  AD adapters + Services
 ui/                                      React + TypeScript (Vite)
 database/schema/                         SQL Server Schema-Stubs
 fixtures/agpm-history-sample.zip         AGPM-style dry-run fixture
-docs/slice-1.md … docs/slice-4.md        Slice-Notizen
+docs/slice-1.md … docs/slice-5.md        Slice-Notizen
 ```
 
 ## Voraussetzungen
@@ -40,16 +40,16 @@ Optional Worker:
 dotnet run --project src/GroupPolicyDirector.Worker
 ```
 
-## Workflow (Slice 4)
+## Workflow (Slice 5)
 
-1. Domain registrieren → **Take Control** (ACL-Plan live/dry-run + Baseline)
-2. **Delegation:** Product Admin vergibt OU/GPO-Rollen an AD-Gruppen (`GPD-Editors` / Approvers / Deployers)
-3. **Editor** (`CONTOSO\gpd-editor`): Checkout (Temp-GPO) → Settings Tree → Check-in  
-4. **Approver** (`CONTOSO\gpd-approver`): Approve (oder Reject)  
-5. **Deployer** (`CONTOSO\gpd-deployer`): Deploy (Temp → Production hook)  
-6. **AGPM Dry-Run:** Fixture-ZIP hochladen oder Pfad angeben → Mapping-Report (kein Write)
-
-OOB: `Simulate live drift` (nur DryRun) → `OOB-Scan + SMTP`. Kein Auto-Reset.
+1. Domain registrieren → **Take Control** GPO und/oder **Container** (OU/Site/Domain)
+2. **Delegation:** Product Admin vergibt OU/GPO/Container-Rollen an AD-Gruppen
+3. **Editor:** Checkout → Settings Tree / Links-Editor → Check-in  
+4. **Approver:** Diff prüfen → Approve (oder Reject)  
+5. **Deployer:** Deploy (Temp→Production / gpLink write)  
+6. **Historie:** Versionen vergleichen (Settings- oder Links-Diff)  
+7. **SMTP:** Settings speichern / Test; OOB bleibt Mail-first ohne Auto-Reset  
+8. **AGPM Dry-Run:** Fixture-ZIP (Slice 4) weiterhin verfügbar
 
 SoD und AD-Admin-Gruppen-Trustee wie Referenz-Tools. Demo-Akteur: Header `X-Gpd-Actor`.
 
@@ -57,28 +57,29 @@ SoD und AD-Admin-Gruppen-Trustee wie Referenz-Tools. Demo-Akteur: Header `X-Gpd-
 
 | Methode | Pfad | Zweck |
 |---------|------|--------|
-| GET | `/api/health` | Health + AD mode (slice=4) |
+| GET | `/api/health` | Health + AD mode (slice=5) |
 | GET | `/api/ad/environment` | Domain-join / GPMC / DryRun |
-| POST | `/api/ad/simulate-drift` | DryRun OOB demo |
-| POST | `/api/gpos/take-control` | Take Control (+ AD hook) |
-| POST | `/api/gpos/{id}/checkout` | Checkout Temp-GPO |
-| GET/PUT | `/api/gpos/{id}/settings-tree` | Policy-Tree |
-| POST | `/api/gpos/{id}/check-in` / `approve` / `reject` / `deploy` | Workflow |
-| POST/GET | `/api/oob/scan`, `/api/oob` | OOB detection + list |
-| GET/POST/DELETE | `/api/delegation/*` | Product + object roles, trustees, hints |
-| POST | `/api/agpm/import/dry-run` | Path-based dry-run |
-| POST | `/api/agpm/import/dry-run/upload` | Zip upload dry-run |
-| GET | `/api/agpm/fixture` | Bundled sample zip path |
+| POST | `/api/gpos/take-control` | Take Control GPO |
+| GET | `/api/gpos/{id}/diff` | Settings Diff zwischen Versionen |
+| POST | `/api/containers/take-control` | Take Control Container |
+| GET/PUT | `/api/containers/{id}/links` | gpLink working copy |
+| POST | `/api/containers/{id}/checkout` / `check-in` / `approve` / `reject` / `deploy` | Container-Workflow |
+| GET | `/api/containers/{id}/diff` | Links Diff |
+| GET/PUT | `/api/settings/smtp` | SMTP runtime config |
+| POST | `/api/settings/smtp/test` | Test-Mail (oder Log-only) |
+| POST/GET | `/api/oob/scan`, `/api/oob` | OOB detection |
+| GET/POST/DELETE | `/api/delegation/*` | Product + object roles |
+| POST | `/api/agpm/import/dry-run` | AGPM dry-run |
 
 ## Auth / AD / SMTP
 
 - **Auth Dev:** `Auth:UseNegotiate=false` → Stub + `X-Gpd-Actor`
 - **AD:** `Gpd:Ad:ForceDryRun` erzwingt DryRun; sonst Auto-Detect
-- **SMTP:** `Smtp:Host` leer = log-only; gesetzt = echter SMTP-Send
+- **SMTP:** Runtime-Overlay über `Smtp:*`; Host leer = log-only; **kein Auto-Reset**
 
-## Nicht in Slice 4
+## Nicht in Slice 5
 
-AGPM History-Write, Intune, Entra SSO, Tier-/ESAE-Gates, Auto-OOB-Reset, vollständiger GPMC-COM CopyGPO, Container-Links, SQL-Persistenz.
+Geplantes Deploy, Auto-OOB-Reset, Intune, Entra SSO, Tier-/ESAE-Gates, SQL-Persistenz, vollständiger GPMC-COM CopyGPO.
 
 ## Lizenz / Marke
 

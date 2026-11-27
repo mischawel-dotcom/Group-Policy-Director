@@ -67,3 +67,31 @@ public sealed class DeployAdRequest
     public required string Actor { get; init; }
     public string? SettingsSnapshotJson { get; init; }
 }
+
+public sealed class TakeControlContainerAdRequest
+{
+    public required string DomainDnsName { get; init; }
+    public required string ContainerKey { get; init; }
+    public required string DisplayName { get; init; }
+    public required string Actor { get; init; }
+    public Domain.AdContainerKind Kind { get; init; }
+    public string? ServiceAccountSam { get; init; }
+}
+
+public sealed class DeployContainerLinksAdRequest
+{
+    public required string DomainDnsName { get; init; }
+    public required string ContainerKey { get; init; }
+    public required string Actor { get; init; }
+    public required Domain.ContainerLinksState Links { get; init; }
+}
+
+/// <summary>Live or dry-run snapshot of a container's gpLink / gpOptions.</summary>
+public sealed class ContainerLinksFingerprint
+{
+    public required string ContainerKey { get; init; }
+    public required string LinksHash { get; init; }
+    public required Domain.ContainerLinksState Links { get; init; }
+    public string? Source { get; init; }
+    public DateTimeOffset CapturedAt { get; init; } = DateTimeOffset.UtcNow;
+}

@@ -38,6 +38,73 @@ type GpoVersion = {
   workflowState?: string
   reviewedBy?: string
   reviewComment?: string
+  settingsHash?: string
+}
+
+type ControlledContainer = {
+  id: string
+  displayName: string
+  containerKey: string
+  kind: number
+  status: number
+  checkedOutBy?: string
+  pendingVersionId?: string
+  approvedBy?: string
+  linksHash?: string
+}
+
+type GpoLinkEntry = {
+  gpoId: string
+  displayName?: string
+  order: number
+  enforced: boolean
+  disabled: boolean
+}
+
+type ContainerLinksState = {
+  blockInheritance: boolean
+  links: GpoLinkEntry[]
+}
+
+type ContainerVersion = {
+  versionNumber: number
+  comment: string
+  createdBy: string
+  createdAt: string
+  provenance?: string
+  workflowState?: string
+  reviewedBy?: string
+  reviewComment?: string
+  linksHash?: string
+}
+
+type DiffChange = {
+  path: string
+  kind: string
+  before?: string
+  after?: string
+}
+
+type VersionDiffResult = {
+  fromVersion: number
+  toVersion: number
+  objectKey: string
+  objectType: string
+  changes: DiffChange[]
+}
+
+type SmtpSettings = {
+  host: string
+  port: number
+  from: string
+  useSsl: boolean
+  user: string
+  passwordConfigured: boolean
+  useDefaultCredentials: boolean
+  isConfigured: boolean
+  alertRecipients: string[]
+  mode: string
+  autoResetEnabled: boolean
 }
 
 type PolicyTreeNode = {
@@ -193,7 +260,21 @@ function objectRoleLabel(role: number): string {
 }
 
 function scopeKindLabel(kind: number): string {
-  return kind === 1 ? 'OU' : 'GPO'
+  switch (kind) {
+    case 1: return 'OU'
+    case 2: return 'GPO'
+    case 3: return 'Container'
+    default: return String(kind)
+  }
+}
+
+function containerKindLabel(kind: number): string {
+  switch (kind) {
+    case 1: return 'OU'
+    case 2: return 'Domain'
+    case 3: return 'Site'
+    default: return String(kind)
+  }
 }
 
 function TreeNodeView({
@@ -281,6 +362,33 @@ export default function App() {
   const [selected, setSelected] = useState<ControlledGpo | null>(null)
   const [tree, setTree] = useState<PolicyTreeNode | null>(null)
   const [history, setHistory] = useState<GpoVersion[]>([])
+  const [diffFrom, setDiffFrom] = useState(1)
+  const [diffTo, setDiffTo] = useState(1)
+  const [diffResult, setDiffResult] = useState<VersionDiffResult | null>(null)
+  const [containers, setContainers] = useState<ControlledContainer[]>([])
+  const [selectedContainerId, setSelectedContainerId] = useState<string | null>(null)
+  const [selectedContainer, setSelectedContainer] = useState<ControlledContainer | null>(null)
+  const [containerLinks, setContainerLinks] = useState<ContainerLinksState | null>(null)
+  const [containerHistory, setContainerHistory] = useState<ContainerVersion[]>([])
+  const [containerDiffFrom, setContainerDiffFrom] = useState(1)
+  const [containerDiffTo, setContainerDiffTo] = useState(1)
+  const [containerDiff, setContainerDiff] = useState<VersionDiffResult | null>(null)
+  const [containerKind, setContainerKind] = useState(1)
+  const [containerKey, setContainerKey] = useState('OU=Workstations,DC=contoso,DC=local')
+  const [containerName, setContainerName] = useState('Workstations OU')
+  const [containerCheckInComment, setContainerCheckInComment] = useState('')
+  const [containerReviewComment, setContainerReviewComment] = useState('')
+  const [newLinkGpoId, setNewLinkGpoId] = useState('{33333333-3333-3333-3333-333333333333}')
+  const [newLinkName, setNewLinkName] = useState('Extra Linked Policy')
+  const [smtp, setSmtp] = useState<SmtpSettings | null>(null)
+  const [smtpHost, setSmtpHost] = useState('')
+  const [smtpPort, setSmtpPort] = useState(25)
+  const [smtpFrom, setSmtpFrom] = useState('')
+  const [smtpUseSsl, setSmtpUseSsl] = useState(false)
+  const [smtpUser, setSmtpUser] = useState('')
+  const [smtpPassword, setSmtpPassword] = useState('')
+  const [smtpRecipients, setSmtpRecipients] = useState('gpd-admins@contoso.local')
+  const [smtpTestTo, setSmtpTestTo] = useState('')
   const [adEnv, setAdEnv] = useState<AdEnvironment | null>(null)
   const [oobHits, setOobHits] = useState<OobDetection[]>([])
   const [dnsName, setDnsName] = useState('contoso.local')
@@ -323,21 +431,34 @@ export default function App() {
   const refresh = useCallback(async () => {
     setError('')
     try {
-      const [m, d, g, env, oob] = await Promise.all([
+      const [m, d, g, env, oob, c, smtpView] = await Promise.all([
         api<Me>('/api/me', undefined, actor),
         api<Domain[]>('/api/domains', undefined, actor),
         api<ControlledGpo[]>('/api/gpos', undefined, actor),
         api<AdEnvironment>('/api/ad/environment', undefined, actor),
         api<OobDetection[]>('/api/oob', undefined, actor),
+        api<ControlledContainer[]>('/api/containers', undefined, actor),
+        api<SmtpSettings>('/api/settings/smtp', undefined, actor),
       ])
       setMe(m)
       setDomains(d)
       setGpos(g)
       setAdEnv(env)
       setOobHits(oob)
+      setContainers(c)
+      setSmtp(smtpView)
+      setSmtpHost(smtpView.host)
+      setSmtpPort(smtpView.port)
+      setSmtpFrom(smtpView.from)
+      setSmtpUseSsl(smtpView.useSsl)
+      setSmtpUser(smtpView.user)
+      setSmtpRecipients(smtpView.alertRecipients.join(', '))
       if (selectedId) {
         const current = g.find((x) => x.id === selectedId) ?? null
         setSelected(current)
+      }
+      if (selectedContainerId) {
+        setSelectedContainer(c.find((x) => x.id === selectedContainerId) ?? null)
       }
       await refreshDelegation()
       const fixture = await api<{ available: boolean; path?: string }>('/api/agpm/fixture', undefined, actor)
@@ -347,7 +468,7 @@ export default function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [actor, selectedId, refreshDelegation])
+  }, [actor, selectedId, selectedContainerId, refreshDelegation])
 
   useEffect(() => {
     void refresh()
@@ -394,6 +515,7 @@ export default function App() {
   async function selectGpo(id: string) {
     setSelectedId(id)
     setPendingEdits({})
+    setDiffResult(null)
     setError('')
     try {
       const [t, h, list] = await Promise.all([
@@ -405,6 +527,283 @@ export default function App() {
       setHistory(h)
       setGpos(list)
       setSelected(list.find((g) => g.id === id) ?? null)
+      if (h.length >= 2) {
+        setDiffFrom(h[h.length - 1]?.versionNumber ?? 1)
+        setDiffTo(h[0]?.versionNumber ?? 1)
+      } else if (h.length === 1) {
+        setDiffFrom(h[0].versionNumber)
+        setDiffTo(h[0].versionNumber)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function loadGpoDiff() {
+    if (!selectedId) return
+    setError('')
+    try {
+      const result = await api<VersionDiffResult>(
+        `/api/gpos/${selectedId}/diff?from=${diffFrom}&to=${diffTo}`,
+        undefined,
+        actor,
+      )
+      setDiffResult(result)
+      setMessage(`GPO Diff v${result.fromVersion} → v${result.toVersion}: ${result.changes.length} change(s).`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function takeControlContainer() {
+    setError('')
+    const domainId = domains[0]?.id
+    if (!domainId) {
+      setError('Register a domain first.')
+      return
+    }
+    try {
+      await api('/api/containers/take-control', {
+        method: 'POST',
+        body: JSON.stringify({
+          domainId,
+          kind: containerKind,
+          containerKey,
+          displayName: containerName,
+        }),
+      }, actor)
+      const mode = adEnv ? adModeLabel(adEnv.effectiveMode) : 'DryRun'
+      setMessage(`Container Take Control: ${containerName} (${mode} gpLink path).`)
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function selectContainer(id: string) {
+    setSelectedContainerId(id)
+    setContainerDiff(null)
+    setError('')
+    try {
+      const [links, hist, list] = await Promise.all([
+        api<ContainerLinksState>(`/api/containers/${id}/links`, undefined, actor),
+        api<ContainerVersion[]>(`/api/containers/${id}/history`, undefined, actor),
+        api<ControlledContainer[]>('/api/containers', undefined, actor),
+      ])
+      setContainerLinks(links)
+      setContainerHistory(hist)
+      setContainers(list)
+      setSelectedContainer(list.find((c) => c.id === id) ?? null)
+      if (hist.length >= 2) {
+        setContainerDiffFrom(hist[hist.length - 1]?.versionNumber ?? 1)
+        setContainerDiffTo(hist[0]?.versionNumber ?? 1)
+      } else if (hist.length === 1) {
+        setContainerDiffFrom(hist[0].versionNumber)
+        setContainerDiffTo(hist[0].versionNumber)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function containerCheckout() {
+    if (!selectedContainerId) return
+    setError('')
+    try {
+      await api(`/api/containers/${selectedContainerId}/checkout`, { method: 'POST' }, actor)
+      setMessage('Container checked out — Links-Editor bereit.')
+      await refresh()
+      await selectContainer(selectedContainerId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function saveContainerLinks() {
+    if (!selectedContainerId || !containerLinks) return
+    setError('')
+    try {
+      const links = await api<ContainerLinksState>(`/api/containers/${selectedContainerId}/links`, {
+        method: 'PUT',
+        body: JSON.stringify(containerLinks),
+      }, actor)
+      setContainerLinks(links)
+      setMessage(`Links gespeichert (${links.links.length}).`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function containerCheckIn() {
+    if (!selectedContainerId) return
+    setError('')
+    try {
+      if (containerLinks) {
+        await saveContainerLinks()
+      }
+      await api(`/api/containers/${selectedContainerId}/check-in`, {
+        method: 'POST',
+        body: JSON.stringify({ comment: containerCheckInComment || 'Container check-in from UI' }),
+      }, actor)
+      setContainerCheckInComment('')
+      setMessage('Container Check-in → Waiting Approval.')
+      await refresh()
+      await selectContainer(selectedContainerId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function containerApprove() {
+    if (!selectedContainerId) return
+    setError('')
+    try {
+      await api(`/api/containers/${selectedContainerId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ comment: containerReviewComment || null }),
+      }, actor)
+      setContainerReviewComment('')
+      setMessage('Container Approved — bereit für Deploy.')
+      await refresh()
+      await selectContainer(selectedContainerId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function containerReject() {
+    if (!selectedContainerId) return
+    setError('')
+    try {
+      await api(`/api/containers/${selectedContainerId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ comment: containerReviewComment || 'Rejected from UI' }),
+      }, actor)
+      setContainerReviewComment('')
+      setMessage('Container Rejected — zurück Under Control.')
+      await refresh()
+      await selectContainer(selectedContainerId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function containerDeploy() {
+    if (!selectedContainerId) return
+    setError('')
+    try {
+      await api(`/api/containers/${selectedContainerId}/deploy`, { method: 'POST' }, actor)
+      const mode = adEnv ? adModeLabel(adEnv.effectiveMode) : 'DryRun'
+      setMessage(`Container Deployed — gpLink geschrieben (${mode}).`)
+      await refresh()
+      await selectContainer(selectedContainerId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function loadContainerDiff() {
+    if (!selectedContainerId) return
+    setError('')
+    try {
+      const result = await api<VersionDiffResult>(
+        `/api/containers/${selectedContainerId}/diff?from=${containerDiffFrom}&to=${containerDiffTo}`,
+        undefined,
+        actor,
+      )
+      setContainerDiff(result)
+      setMessage(`Container Diff v${result.fromVersion} → v${result.toVersion}: ${result.changes.length} change(s).`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  function moveLink(index: number, direction: -1 | 1) {
+    setContainerLinks((prev) => {
+      if (!prev) return prev
+      const links = [...prev.links].sort((a, b) => a.order - b.order)
+      const target = index + direction
+      if (target < 0 || target >= links.length) return prev
+      const tmp = links[index]
+      links[index] = links[target]
+      links[target] = tmp
+      return {
+        ...prev,
+        links: links.map((l, i) => ({ ...l, order: i })),
+      }
+    })
+  }
+
+  function toggleLinkFlag(index: number, flag: 'enforced' | 'disabled') {
+    setContainerLinks((prev) => {
+      if (!prev) return prev
+      const links = [...prev.links].sort((a, b) => a.order - b.order)
+      links[index] = { ...links[index], [flag]: !links[index][flag] }
+      return { ...prev, links }
+    })
+  }
+
+  function removeLink(index: number) {
+    setContainerLinks((prev) => {
+      if (!prev) return prev
+      const links = [...prev.links].sort((a, b) => a.order - b.order).filter((_, i) => i !== index)
+      return { ...prev, links: links.map((l, i) => ({ ...l, order: i })) }
+    })
+  }
+
+  function addLink() {
+    setContainerLinks((prev) => {
+      if (!prev) return prev
+      if (prev.links.some((l) => l.gpoId.toLowerCase() === newLinkGpoId.toLowerCase())) {
+        return prev
+      }
+      return {
+        ...prev,
+        links: [
+          ...prev.links,
+          {
+            gpoId: newLinkGpoId,
+            displayName: newLinkName,
+            order: prev.links.length,
+            enforced: false,
+            disabled: false,
+          },
+        ],
+      }
+    })
+  }
+
+  async function saveSmtp() {
+    setError('')
+    try {
+      const view = await api<SmtpSettings>('/api/settings/smtp', {
+        method: 'PUT',
+        body: JSON.stringify({
+          host: smtpHost,
+          port: smtpPort,
+          from: smtpFrom,
+          useSsl: smtpUseSsl,
+          user: smtpUser,
+          password: smtpPassword || null,
+          alertRecipients: smtpRecipients.split(/[,;\s]+/).filter(Boolean),
+        }),
+      }, actor)
+      setSmtp(view)
+      setSmtpPassword('')
+      setMessage(`SMTP gespeichert — Mode ${view.mode}. Auto-reset: aus.`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function testSmtp() {
+    setError('')
+    try {
+      const result = await api<{ ok: boolean; message: string; mode: string }>('/api/settings/smtp/test', {
+        method: 'POST',
+        body: JSON.stringify({ to: smtpTestTo || null }),
+      }, actor)
+      setMessage(result.message)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -648,6 +1047,9 @@ export default function App() {
   }
 
   const canEditTree = selected?.status === 2 && selected.checkedOutBy?.toLowerCase() === actor.toLowerCase()
+  const canEditLinks =
+    selectedContainer?.status === 2 &&
+    selectedContainer.checkedOutBy?.toLowerCase() === actor.toLowerCase()
   const demoActors = me?.demoActors ?? [
     'CONTOSO\\gpd-admin',
     'CONTOSO\\gpd-editor',
@@ -661,7 +1063,7 @@ export default function App() {
         <p className="brand">Group Policy Director</p>
         <h1>Take Control → Checkout → Approve → Deploy</h1>
         <p className="lede">
-          Slice 4 — AGPM archive dry-run report + Admin-Delegation an AD-Rollengruppen. Slice 3 AD/OOB bleibt erhalten.
+          Slice 5 — AD Container-Links (OU/Site/Domain gpLink), History/Diff, SMTP-Polish für OOB. Branding bleibt Referenz-Tools.
         </p>
         {me ? (
           <p className="identity">
@@ -755,8 +1157,36 @@ export default function App() {
           </p>
         </section>
 
+        <section className="panel">
+          <h2>Take Control — AD Container (gpLink)</h2>
+          <div className="row">
+            <label>
+              Typ
+              <select value={containerKind} onChange={(e) => setContainerKind(Number(e.target.value))}>
+                <option value={1}>OU</option>
+                <option value={2}>Domain</option>
+                <option value={3}>Site</option>
+              </select>
+            </label>
+            <label>
+              Container-Key (DN)
+              <input value={containerKey} onChange={(e) => setContainerKey(e.target.value)} />
+            </label>
+            <label>
+              Anzeigename
+              <input value={containerName} onChange={(e) => setContainerName(e.target.value)} />
+            </label>
+            <button type="button" onClick={() => void takeControlContainer()}>
+              Take Control Container
+            </button>
+          </div>
+          <p className="muted">
+            Sites / Domain / OUs: gpLink Order, Enforce, Disable, Block Inheritance — gleicher Checkout → Approve → Deploy-Pfad.
+          </p>
+        </section>
+
         <section className="panel delegation-panel">
-          <h2>Delegation (OU / GPO → AD-Gruppen)</h2>
+          <h2>Delegation (OU / GPO / Container → AD-Gruppen)</h2>
           <p className="muted">
             Product Admin vergibt Objektrollen an bestehende AD-Admin-Rollengruppen (Referenz-Tools-Modell). SoD: Editor ≠ Approver/Deployer.
           </p>
@@ -774,8 +1204,9 @@ export default function App() {
                   if (hint) setDelScopeKey(hint.scopeKey)
                 }}
               >
-                <option value={1}>OU / Container</option>
+                <option value={1}>OU</option>
                 <option value={2}>GPO</option>
+                <option value={3}>Container (Site/Domain/OU)</option>
               </select>
             </label>
             <label>
@@ -969,25 +1400,360 @@ export default function App() {
           )}
         </section>
 
-        <section className="panel">
-          <h2>Historie</h2>
+        <section className="panel history-panel">
+          <h2>Historie &amp; Diff (GPO)</h2>
           {history.length ? (
-            <ol className="history">
-              {history.map((v) => (
-                <li key={`${v.versionNumber}-${v.createdAt}`}>
-                  v{v.versionNumber} — {v.comment}
-                  <span>
-                    {v.createdBy} · {new Date(v.createdAt).toLocaleString('de-DE')}
-                    {v.workflowState ? ` · ${v.workflowState}` : ''}
-                    {v.reviewedBy ? ` · review: ${v.reviewedBy}` : ''}
-                    {v.provenance ? ` · ${v.provenance}` : ''}
-                  </span>
-                </li>
-              ))}
-            </ol>
+            <>
+              <ol className="history">
+                {history.map((v) => (
+                  <li key={`${v.versionNumber}-${v.createdAt}`}>
+                    <button
+                      type="button"
+                      className="history-pick"
+                      onClick={() => {
+                        setDiffFrom((prev) => (prev === v.versionNumber ? prev : Math.min(prev, v.versionNumber)))
+                        setDiffTo(v.versionNumber)
+                      }}
+                    >
+                      v{v.versionNumber} — {v.comment}
+                    </button>
+                    <span>
+                      {v.createdBy} · {new Date(v.createdAt).toLocaleString('de-DE')}
+                      {v.workflowState ? ` · ${v.workflowState}` : ''}
+                      {v.reviewedBy ? ` · review: ${v.reviewedBy}` : ''}
+                      {v.provenance ? ` · ${v.provenance}` : ''}
+                      {v.settingsHash ? ` · hash ${v.settingsHash.slice(0, 10)}…` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <div className="row">
+                <label>
+                  From
+                  <select value={diffFrom} onChange={(e) => setDiffFrom(Number(e.target.value))}>
+                    {history.map((v) => (
+                      <option key={`from-${v.versionNumber}`} value={v.versionNumber}>
+                        v{v.versionNumber}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  To
+                  <select value={diffTo} onChange={(e) => setDiffTo(Number(e.target.value))}>
+                    {history.map((v) => (
+                      <option key={`to-${v.versionNumber}`} value={v.versionNumber}>
+                        v{v.versionNumber}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" onClick={() => void loadGpoDiff()}>
+                  Settings Diff
+                </button>
+              </div>
+              {diffResult ? (
+                <div className="diff-panel">
+                  <p>
+                    <strong>
+                      {diffResult.objectType} v{diffResult.fromVersion} → v{diffResult.toVersion}
+                    </strong>
+                    {' · '}
+                    {diffResult.changes.length} Änderung(en)
+                  </p>
+                  {diffResult.changes.length ? (
+                    <ul className="diff-list">
+                      {diffResult.changes.map((c) => (
+                        <li key={`${c.kind}-${c.path}`} className={`diff-${c.kind.toLowerCase()}`}>
+                          <strong>{c.kind}</strong> <code>{c.path}</code>
+                          <div className="diff-values">
+                            {c.before != null ? <span className="before">− {c.before}</span> : null}
+                            {c.after != null ? <span className="after">+ {c.after}</span> : null}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="muted">Keine Settings-Unterschiede.</p>
+                  )}
+                </div>
+              ) : null}
+            </>
           ) : (
             <p className="muted">Keine Versionen.</p>
           )}
+        </section>
+
+        <section className="panel workflow-panel">
+          <h2>Kontrollierte Container &amp; Links-Editor</h2>
+          <ul className="gpo-list">
+            {containers.map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  className={selectedContainerId === c.id ? 'selected' : ''}
+                  onClick={() => void selectContainer(c.id)}
+                >
+                  <strong>
+                    {containerKindLabel(c.kind)} · {c.displayName}
+                  </strong>
+                  <span>{statusLabel(c.status)}</span>
+                  <span className="muted temp-id">{c.containerKey}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {selectedContainerId ? (
+            <>
+              <div className="actions">
+                <button type="button" onClick={() => void containerCheckout()}>
+                  Checkout
+                </button>
+                <input
+                  placeholder="Check-in Kommentar"
+                  value={containerCheckInComment}
+                  onChange={(e) => setContainerCheckInComment(e.target.value)}
+                />
+                <button type="button" onClick={() => void containerCheckIn()}>
+                  Check-in
+                </button>
+              </div>
+              <div className="actions">
+                <input
+                  placeholder="Approve/Reject Kommentar"
+                  value={containerReviewComment}
+                  onChange={(e) => setContainerReviewComment(e.target.value)}
+                />
+                <button type="button" onClick={() => void containerApprove()}>
+                  Approve
+                </button>
+                <button type="button" className="secondary" onClick={() => void containerReject()}>
+                  Reject
+                </button>
+                <button type="button" onClick={() => void containerDeploy()}>
+                  Deploy
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="muted">Container Take Control, dann auswählen.</p>
+          )}
+
+          {containerLinks ? (
+            <div className="links-editor">
+              <h3>gpLink Links</h3>
+              <label className="checkbox-label">
+                Block Inheritance
+                <input
+                  type="checkbox"
+                  checked={containerLinks.blockInheritance}
+                  disabled={!canEditLinks}
+                  onChange={(e) =>
+                    setContainerLinks((prev) =>
+                      prev ? { ...prev, blockInheritance: e.target.checked } : prev,
+                    )
+                  }
+                />
+              </label>
+              <ul className="links-list">
+                {[...containerLinks.links]
+                  .sort((a, b) => a.order - b.order)
+                  .map((link, index) => (
+                    <li key={`${link.gpoId}-${index}`}>
+                      <div className="link-main">
+                        <strong>
+                          #{link.order} {link.displayName ?? link.gpoId}
+                        </strong>
+                        <code>{link.gpoId}</code>
+                        <span className="muted">
+                          {link.enforced ? 'Enforced' : 'Not enforced'}
+                          {' · '}
+                          {link.disabled ? 'Disabled' : 'Enabled'}
+                        </span>
+                      </div>
+                      {canEditLinks ? (
+                        <div className="link-actions">
+                          <button type="button" className="secondary" onClick={() => moveLink(index, -1)}>
+                            ↑
+                          </button>
+                          <button type="button" className="secondary" onClick={() => moveLink(index, 1)}>
+                            ↓
+                          </button>
+                          <button type="button" className="secondary" onClick={() => toggleLinkFlag(index, 'enforced')}>
+                            Enforce
+                          </button>
+                          <button type="button" className="secondary" onClick={() => toggleLinkFlag(index, 'disabled')}>
+                            Disable
+                          </button>
+                          <button type="button" className="secondary" onClick={() => removeLink(index)}>
+                            Remove
+                          </button>
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+              </ul>
+              {canEditLinks ? (
+                <>
+                  <div className="row">
+                    <label>
+                      GPO GUID
+                      <input value={newLinkGpoId} onChange={(e) => setNewLinkGpoId(e.target.value)} />
+                    </label>
+                    <label>
+                      Anzeigename
+                      <input value={newLinkName} onChange={(e) => setNewLinkName(e.target.value)} />
+                    </label>
+                    <button type="button" onClick={() => addLink()}>
+                      Add Link
+                    </button>
+                    <button type="button" onClick={() => void saveContainerLinks()}>
+                      Links speichern
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="muted">Links editierbar nur bei Checkout durch denselben Akteur.</p>
+              )}
+            </div>
+          ) : null}
+
+          {containerHistory.length ? (
+            <div className="container-history">
+              <h3>Container Historie &amp; Diff</h3>
+              <ol className="history">
+                {containerHistory.map((v) => (
+                  <li key={`c-${v.versionNumber}-${v.createdAt}`}>
+                    v{v.versionNumber} — {v.comment}
+                    <span>
+                      {v.createdBy} · {new Date(v.createdAt).toLocaleString('de-DE')}
+                      {v.workflowState ? ` · ${v.workflowState}` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <div className="row">
+                <label>
+                  From
+                  <select
+                    value={containerDiffFrom}
+                    onChange={(e) => setContainerDiffFrom(Number(e.target.value))}
+                  >
+                    {containerHistory.map((v) => (
+                      <option key={`cfrom-${v.versionNumber}`} value={v.versionNumber}>
+                        v{v.versionNumber}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  To
+                  <select
+                    value={containerDiffTo}
+                    onChange={(e) => setContainerDiffTo(Number(e.target.value))}
+                  >
+                    {containerHistory.map((v) => (
+                      <option key={`cto-${v.versionNumber}`} value={v.versionNumber}>
+                        v{v.versionNumber}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" onClick={() => void loadContainerDiff()}>
+                  Links Diff
+                </button>
+              </div>
+              {containerDiff ? (
+                <div className="diff-panel">
+                  <p>
+                    <strong>
+                      Container v{containerDiff.fromVersion} → v{containerDiff.toVersion}
+                    </strong>
+                    {' · '}
+                    {containerDiff.changes.length} Änderung(en)
+                  </p>
+                  <ul className="diff-list">
+                    {containerDiff.changes.map((c) => (
+                      <li key={`cd-${c.kind}-${c.path}`} className={`diff-${c.kind.toLowerCase()}`}>
+                        <strong>{c.kind}</strong> <code>{c.path}</code>
+                        <div className="diff-values">
+                          {c.before != null ? <span className="before">− {c.before}</span> : null}
+                          {c.after != null ? <span className="after">+ {c.after}</span> : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+
+        <section className="panel">
+          <h2>SMTP (OOB Mail-first)</h2>
+          <p className="muted">
+            Runtime-Overlay für OOB-Alerts. Host leer = Log-only. Auto-Reset bleibt deaktiviert.
+            {smtp ? ` Aktuell: ${smtp.mode}${smtp.passwordConfigured ? ' · Passwort gesetzt' : ''}.` : ''}
+          </p>
+          <div className="row">
+            <label>
+              Host
+              <input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="leer = log-only" />
+            </label>
+            <label>
+              Port
+              <input
+                type="number"
+                value={smtpPort}
+                onChange={(e) => setSmtpPort(Number(e.target.value) || 25)}
+              />
+            </label>
+            <label>
+              From
+              <input value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} />
+            </label>
+            <label className="checkbox-label">
+              SSL/TLS
+              <input
+                type="checkbox"
+                checked={smtpUseSsl}
+                onChange={(e) => setSmtpUseSsl(e.target.checked)}
+              />
+            </label>
+          </div>
+          <div className="row">
+            <label>
+              User
+              <input value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} />
+            </label>
+            <label>
+              Password {smtp?.passwordConfigured ? '(gesetzt — leer lassen behält)' : ''}
+              <input
+                type="password"
+                value={smtpPassword}
+                onChange={(e) => setSmtpPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+            </label>
+            <label>
+              Alert recipients
+              <input value={smtpRecipients} onChange={(e) => setSmtpRecipients(e.target.value)} />
+            </label>
+          </div>
+          <div className="actions">
+            <button type="button" onClick={() => void saveSmtp()}>
+              SMTP speichern
+            </button>
+            <input
+              placeholder="Test-Empfänger (optional)"
+              value={smtpTestTo}
+              onChange={(e) => setSmtpTestTo(e.target.value)}
+            />
+            <button type="button" className="secondary" onClick={() => void testSmtp()}>
+              Test senden
+            </button>
+          </div>
+          <p className="muted">Auto-reset enabled: never (MVP mail-first).</p>
         </section>
 
         <section className="panel">
@@ -1102,7 +1868,7 @@ export default function App() {
 
       <footer>
         <p>
-          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 4 AGPM/Delegation · Referenz-Tools branding · keine Tier-Gates
+          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 5 Container-Links / Diff / SMTP · Referenz-Tools branding · keine Tier-Gates · kein Auto-Reset
         </p>
       </footer>
     </div>
