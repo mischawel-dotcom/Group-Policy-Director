@@ -24,12 +24,14 @@ public static class DependencyInjection
         services.AddSingleton<IDiffService, DiffService>();
         services.AddSingleton<IGpoWorkflowService, GpoWorkflowService>();
         services.AddSingleton<IContainerWorkflowService, ContainerWorkflowService>();
+        services.AddSingleton<IScheduledDeployService, ScheduledDeployService>();
         services.AddSingleton<IOobDetectionService, OobDetectionService>();
         services.AddSingleton<IAgpmImportService, AgpmImportDryRunService>();
         services.AddSingleton<ISmtpSettingsService, SmtpSettingsService>();
         services.AddSingleton<IGeneralSettingsService, GeneralSettingsService>();
         services.AddSingleton<IRestrictedPolicyService, RestrictedPolicyService>();
         services.AddSingleton<IEmailNotifier, SmtpEmailNotifier>();
+        services.AddHostedService<ScheduledDeployHostedService>();
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {

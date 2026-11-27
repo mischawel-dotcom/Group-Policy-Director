@@ -269,10 +269,10 @@ public sealed class GpoWorkflowService(
             throw new UnauthorizedAccessException("Editor (or Product Admin / active Break Glass) role required to rename.");
         }
 
-        if (gpo.Status is ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved)
-        {
-            throw new InvalidOperationException($"Cannot rename while status is {gpo.Status}.");
-        }
+            if (gpo.Status is ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled)
+            {
+                throw new InvalidOperationException($"Cannot rename while status is {gpo.Status}.");
+            }
 
         // ControlledGpo.DisplayName is init-only — replace entry in store.
         ControlledGpo renamed;
@@ -294,7 +294,8 @@ public sealed class GpoWorkflowService(
                 TakenControlBy = gpo.TakenControlBy,
                 PendingVersionId = gpo.PendingVersionId,
                 ApprovedBy = gpo.ApprovedBy,
-                ApprovedAt = gpo.ApprovedAt
+                ApprovedAt = gpo.ApprovedAt,
+                ActiveScheduleId = gpo.ActiveScheduleId
             };
             store.Gpos.Add(renamed);
 
@@ -355,7 +356,7 @@ public sealed class GpoWorkflowService(
                 throw new InvalidOperationException($"Already checked out by {gpo.CheckedOutBy}.");
             }
 
-            if (gpo.Status is ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved)
+            if (gpo.Status is ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled)
             {
                 throw new InvalidOperationException($"Cannot checkout while status is {gpo.Status}.");
             }
@@ -408,6 +409,7 @@ public sealed class GpoWorkflowService(
             gpo.PendingVersionId = null;
             gpo.ApprovedBy = null;
             gpo.ApprovedAt = null;
+            gpo.ActiveScheduleId = null;
         }
 
         await audit.WriteAsync(new AuditEvent
@@ -679,7 +681,7 @@ public sealed class GpoWorkflowService(
             domain = store.Domains.FirstOrDefault(d => d.Id == gpo.DomainId);
             tempId = gpo.TempGpoId;
 
-            if (gpo.Status is not (ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved) ||
+            if (gpo.Status is not (ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled) ||
                 gpo.PendingVersionId is null)
             {
                 throw new InvalidOperationException("GPO has no pending version to reject.");
@@ -687,6 +689,19 @@ public sealed class GpoWorkflowService(
 
             version = store.Versions.FirstOrDefault(v => v.Id == gpo.PendingVersionId)
                       ?? throw new InvalidOperationException("Pending version not found.");
+
+            if (gpo.ActiveScheduleId is Guid schedId)
+            {
+                var sched = store.ScheduledDeploys.FirstOrDefault(s => s.Id == schedId);
+                if (sched is not null && sched.Status == ScheduledDeployStatus.Pending)
+                {
+                    sched.Status = ScheduledDeployStatus.Cancelled;
+                    sched.CancelledAt = DateTimeOffset.UtcNow;
+                    sched.CancelledBy = actor;
+                    sched.CompletedAt = DateTimeOffset.UtcNow;
+                    sched.ErrorMessage = "Cancelled by Reject";
+                }
+            }
         }
 
         await EnsureApproverAsync(actor, gpo, version, ct);
@@ -706,6 +721,7 @@ public sealed class GpoWorkflowService(
             gpo.TempGpoId = null;
             gpo.ApprovedBy = null;
             gpo.ApprovedAt = null;
+            gpo.ActiveScheduleId = null;
         }
 
         await audit.WriteAsync(new AuditEvent
@@ -720,12 +736,42 @@ public sealed class GpoWorkflowService(
         return gpo;
     }
 
-    public async Task<ControlledGpo> DeployAsync(Guid controlledGpoId, string actor, CancellationToken ct = default)
+    public Task<ControlledGpo> DeployAsync(Guid controlledGpoId, string actor, CancellationToken ct = default) =>
+        DeployAsync(controlledGpoId, actor, new DeployOptions(), ct);
+
+    public async Task EnsureCanDeployAsync(Guid controlledGpoId, string actor, CancellationToken ct = default)
+    {
+        ControlledGpo gpo;
+        GpoVersion version;
+        lock (store.Sync)
+        {
+            gpo = store.Gpos.FirstOrDefault(g => g.Id == controlledGpoId)
+                  ?? throw new KeyNotFoundException("Controlled GPO not found.");
+
+            if (gpo.Status is not (ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled) ||
+                gpo.PendingVersionId is null)
+            {
+                throw new InvalidOperationException("GPO must be Approved (or Scheduled) before Deploy.");
+            }
+
+            version = store.Versions.FirstOrDefault(v => v.Id == gpo.PendingVersionId)
+                      ?? throw new InvalidOperationException("Pending version not found.");
+        }
+
+        await EnsureDeployerAsync(actor, gpo, version, ct);
+    }
+
+    public async Task<ControlledGpo> DeployAsync(
+        Guid controlledGpoId,
+        string actor,
+        DeployOptions options,
+        CancellationToken ct = default)
     {
         ControlledGpo gpo;
         GpoVersion version;
         DomainRegistration domain;
         string? tempId;
+        GpoVersion? previousDeployed;
         lock (store.Sync)
         {
             gpo = store.Gpos.FirstOrDefault(g => g.Id == controlledGpoId)
@@ -736,15 +782,216 @@ public sealed class GpoWorkflowService(
 
             tempId = gpo.TempGpoId;
 
-            if (gpo.Status != ControlledGpoStatus.Approved || gpo.PendingVersionId is null)
+            if (gpo.Status is not (ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled) ||
+                gpo.PendingVersionId is null)
             {
-                throw new InvalidOperationException("GPO must be Approved before Deploy.");
+                throw new InvalidOperationException("GPO must be Approved (or Scheduled) before Deploy.");
             }
 
             version = store.Versions.FirstOrDefault(v => v.Id == gpo.PendingVersionId)
                       ?? throw new InvalidOperationException("Pending version not found.");
+
+            previousDeployed = store.Versions
+                .Where(v => v.ControlledGpoId == controlledGpoId &&
+                            string.Equals(v.WorkflowState, "Deployed", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(v => v.VersionNumber)
+                .FirstOrDefault();
         }
 
+        await EnsureDeployerAsync(actor, gpo, version, ct);
+        await AuditBreakGlassUseAsync(actor, "Gpo.Deploy", gpo.ProductionGpoId, ct);
+
+        // Apply candidate settings first so SimulateFailure can exercise Rollback-on-fail.
+        lock (store.Sync)
+        {
+            if (!string.IsNullOrWhiteSpace(version.SettingsSnapshotJson))
+            {
+                var applied = JsonSerializer.Deserialize<PolicyTreeNode>(version.SettingsSnapshotJson);
+                if (applied is not null)
+                {
+                    store.SettingsTrees[gpo.Id] = applied;
+                }
+            }
+        }
+
+        AdOperationResult deployResult;
+        try
+        {
+            if (options.SimulateFailure)
+            {
+                throw new InvalidOperationException("Simulated deploy failure (Slice 8 smoke).");
+            }
+
+            deployResult = await directory.DeployTempToProductionAsync(new DeployAdRequest
+            {
+                DomainDnsName = domain.DnsName,
+                ProductionGpoId = gpo.ProductionGpoId,
+                TempGpoId = tempId ?? "(none)",
+                Actor = actor,
+                SettingsSnapshotJson = version.SettingsSnapshotJson
+            }, ct);
+
+            if (!deployResult.Success)
+            {
+                throw new InvalidOperationException(deployResult.Message ?? "AD Deploy reported failure.");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (options.RollbackOnFailure)
+            {
+                await RollbackGpoAsync(gpo, previousDeployed, actor, ex.Message, ct);
+                throw new InvalidOperationException(
+                    $"Deploy failed and was rolled back to last controlled version: {ex.Message}", ex);
+            }
+
+            lock (store.Sync)
+            {
+                // Leave Approved so Deployer can retry; clear schedule link.
+                gpo.Status = ControlledGpoStatus.Approved;
+                gpo.ActiveScheduleId = null;
+                version.WorkflowState = "DeployFailed";
+            }
+
+            await audit.WriteAsync(new AuditEvent
+            {
+                Actor = actor,
+                Action = "Gpo.Deploy",
+                ObjectKey = gpo.ProductionGpoId,
+                Outcome = "Failed",
+                DetailJson = JsonSerializer.Serialize(new
+                {
+                    version.VersionNumber,
+                    error = ex.Message,
+                    rollbackOnFailure = false
+                })
+            }, ct);
+
+            throw;
+        }
+
+        lock (store.Sync)
+        {
+            version.WorkflowState = "Deployed";
+            gpo.SettingsHash = version.SettingsHash;
+            gpo.Status = ControlledGpoStatus.UnderControl;
+            gpo.PendingVersionId = null;
+            gpo.TempGpoId = null;
+            gpo.ApprovedBy = null;
+            gpo.ApprovedAt = null;
+            gpo.ActiveScheduleId = null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(version.SettingsHash))
+        {
+            await directory.SetControlledBaselineAsync(
+                gpo.ProductionGpoId,
+                version.SettingsHash!,
+                gpo.DisplayName,
+                ct);
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = actor,
+            Action = "Gpo.Deploy",
+            ObjectKey = gpo.ProductionGpoId,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                version.VersionNumber,
+                adMode = deployResult.Mode.ToString(),
+                adMessage = deployResult.Message,
+                plannedSteps = deployResult.PlannedSteps,
+                rollbackOnFailure = options.RollbackOnFailure
+            })
+        }, ct);
+
+        return gpo;
+    }
+
+    private async Task RollbackGpoAsync(
+        ControlledGpo gpo,
+        GpoVersion? previousDeployed,
+        string actor,
+        string failureMessage,
+        CancellationToken ct)
+    {
+        DomainRegistration? domain;
+        string? restoreJson;
+        string? restoreHash;
+        int? restoreVersion;
+        lock (store.Sync)
+        {
+            domain = store.Domains.FirstOrDefault(d => d.Id == gpo.DomainId);
+            restoreJson = previousDeployed?.SettingsSnapshotJson;
+            restoreHash = previousDeployed?.SettingsHash ?? gpo.SettingsHash;
+            restoreVersion = previousDeployed?.VersionNumber;
+
+            if (!string.IsNullOrWhiteSpace(restoreJson))
+            {
+                var restored = JsonSerializer.Deserialize<PolicyTreeNode>(restoreJson);
+                if (restored is not null)
+                {
+                    store.SettingsTrees[gpo.Id] = restored;
+                }
+            }
+
+            gpo.SettingsHash = restoreHash;
+            gpo.Status = ControlledGpoStatus.UnderControl;
+            gpo.PendingVersionId = null;
+            gpo.TempGpoId = null;
+            gpo.ApprovedBy = null;
+            gpo.ApprovedAt = null;
+            gpo.ActiveScheduleId = null;
+
+            var pending = store.Versions.FirstOrDefault(v =>
+                v.ControlledGpoId == gpo.Id &&
+                string.Equals(v.WorkflowState, "Approved", StringComparison.OrdinalIgnoreCase));
+            if (pending is not null)
+            {
+                pending.WorkflowState = "DeployFailed";
+                pending.ReviewComment = string.IsNullOrWhiteSpace(pending.ReviewComment)
+                    ? $"Deploy failed: {failureMessage}"
+                    : pending.ReviewComment;
+            }
+        }
+
+        if (domain is not null && !string.IsNullOrWhiteSpace(restoreHash))
+        {
+            await directory.DeployTempToProductionAsync(new DeployAdRequest
+            {
+                DomainDnsName = domain.DnsName,
+                ProductionGpoId = gpo.ProductionGpoId,
+                TempGpoId = "(rollback)",
+                Actor = actor,
+                SettingsSnapshotJson = restoreJson
+            }, ct);
+
+            await directory.SetControlledBaselineAsync(
+                gpo.ProductionGpoId,
+                restoreHash!,
+                gpo.DisplayName,
+                ct);
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = actor,
+            Action = "Gpo.DeployRollback",
+            ObjectKey = gpo.ProductionGpoId,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                failureMessage,
+                restoredVersion = restoreVersion,
+                restoredHash = restoreHash
+            })
+        }, ct);
+    }
+
+    private async Task EnsureDeployerAsync(string actor, ControlledGpo gpo, GpoVersion version, CancellationToken ct)
+    {
         await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
         var breakGlassActive = await breakGlass.HasActiveBreakGlassAsync(actor, ct);
         if (!breakGlassActive && string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
@@ -767,64 +1014,6 @@ public sealed class GpoWorkflowService(
                 throw new UnauthorizedAccessException("Separate Deployer role is configured; Approver cannot Deploy.");
             }
         }
-
-        await AuditBreakGlassUseAsync(actor, "Gpo.Deploy", gpo.ProductionGpoId, ct);
-
-        var deployResult = await directory.DeployTempToProductionAsync(new DeployAdRequest
-        {
-            DomainDnsName = domain.DnsName,
-            ProductionGpoId = gpo.ProductionGpoId,
-            TempGpoId = tempId ?? "(none)",
-            Actor = actor,
-            SettingsSnapshotJson = version.SettingsSnapshotJson
-        }, ct);
-
-        lock (store.Sync)
-        {
-            if (!string.IsNullOrWhiteSpace(version.SettingsSnapshotJson))
-            {
-                var applied = JsonSerializer.Deserialize<PolicyTreeNode>(version.SettingsSnapshotJson);
-                if (applied is not null)
-                {
-                    store.SettingsTrees[gpo.Id] = applied;
-                }
-            }
-
-            version.WorkflowState = "Deployed";
-            gpo.SettingsHash = version.SettingsHash;
-            gpo.Status = ControlledGpoStatus.UnderControl;
-            gpo.PendingVersionId = null;
-            gpo.TempGpoId = null;
-            gpo.ApprovedBy = null;
-            gpo.ApprovedAt = null;
-        }
-
-        // Keep dry-run live fingerprint aligned with deployed controlled hash for OOB.
-        if (!string.IsNullOrWhiteSpace(version.SettingsHash))
-        {
-            await directory.SetControlledBaselineAsync(
-                gpo.ProductionGpoId,
-                version.SettingsHash!,
-                gpo.DisplayName,
-                ct);
-        }
-
-        await audit.WriteAsync(new AuditEvent
-        {
-            Actor = actor,
-            Action = "Gpo.Deploy",
-            ObjectKey = gpo.ProductionGpoId,
-            Outcome = "Success",
-            DetailJson = JsonSerializer.Serialize(new
-            {
-                version.VersionNumber,
-                adMode = deployResult.Mode.ToString(),
-                adMessage = deployResult.Message,
-                plannedSteps = deployResult.PlannedSteps
-            })
-        }, ct);
-
-        return gpo;
     }
 
     public Task<IReadOnlyList<GpoVersion>> GetHistoryAsync(Guid controlledGpoId, CancellationToken ct = default)

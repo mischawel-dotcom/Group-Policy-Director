@@ -9,7 +9,10 @@ namespace GroupPolicyDirector.Api.Controllers;
 [ApiController]
 [Route("api/gpos")]
 [Authorize]
-public sealed class GposController(IGpoWorkflowService workflow, IDiffService diff) : ControllerBase
+public sealed class GposController(
+    IGpoWorkflowService workflow,
+    IScheduledDeployService schedule,
+    IDiffService diff) : ControllerBase
 {
     private string Actor
     {
@@ -219,13 +222,64 @@ public sealed class GposController(IGpoWorkflowService workflow, IDiffService di
         }
     }
 
+    public sealed record DeployRequest(bool? RollbackOnFailure, bool? SimulateFailure);
+
     [HttpPost("{id:guid}/deploy")]
-    public async Task<IActionResult> Deploy(Guid id, CancellationToken ct)
+    public async Task<IActionResult> Deploy(Guid id, [FromBody] DeployRequest? request, CancellationToken ct)
     {
         try
         {
-            var gpo = await workflow.DeployAsync(id, Actor, ct);
+            var options = new DeployOptions
+            {
+                RollbackOnFailure = request?.RollbackOnFailure ?? false,
+                SimulateFailure = request?.SimulateFailure ?? false
+            };
+            var gpo = await workflow.DeployAsync(id, Actor, options, ct);
             return Ok(gpo);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpPost("{id:guid}/schedule-deploy")]
+    public async Task<IActionResult> ScheduleDeploy(Guid id, [FromBody] ScheduleDeployRequest request, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await schedule.ScheduleGpoAsync(id, request, Actor, ct));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or KeyNotFoundException)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpPost("{id:guid}/cancel-schedule")]
+    public async Task<IActionResult> CancelSchedule(Guid id, CancellationToken ct)
+    {
+        try
+        {
+            ControlledGpo gpo;
+            // Resolve active schedule from object, then cancel via queue service.
+            var listed = await workflow.ListControlledAsync(ct);
+            gpo = listed.FirstOrDefault(g => g.Id == id)
+                  ?? throw new KeyNotFoundException("Controlled GPO not found.");
+            if (gpo.ActiveScheduleId is null)
+            {
+                return BadRequest(new { error = "No active schedule for this GPO." });
+            }
+
+            return Ok(await schedule.CancelAsync(gpo.ActiveScheduleId.Value, Actor, ct));
         }
         catch (UnauthorizedAccessException ex)
         {

@@ -1,15 +1,22 @@
 using GroupPolicyDirector.Core.Domain;
+using GroupPolicyDirector.Core.Workflow;
 
 namespace GroupPolicyDirector.Worker;
 
 /// <summary>
-/// Background OOB scanner (mail-first). Interval from Oob:ScanIntervalSeconds.
+/// Background OOB scanner (mail-first) + scheduled-deploy nudge.
+/// Shared SQL will make Worker ProcessDue see the same queue as the API; until then
+/// the API hosted processor owns in-memory due jobs.
 /// </summary>
-public sealed class Worker(ILogger<Worker> logger, IOobDetectionService oob, IConfiguration config) : BackgroundService
+public sealed class Worker(
+    ILogger<Worker> logger,
+    IOobDetectionService oob,
+    IScheduledDeployService schedules,
+    IConfiguration config) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Group Policy Director Worker started (OOB baseline-vs-live scan).");
+        logger.LogInformation("Group Policy Director Worker started (OOB scan + scheduled deploy).");
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -25,10 +32,16 @@ public sealed class Worker(ILogger<Worker> logger, IOobDetectionService oob, ICo
                 {
                     logger.LogDebug("OOB scan complete — no drift.");
                 }
+
+                var due = await schedules.ProcessDueAsync(stoppingToken);
+                if (due.Count > 0)
+                {
+                    logger.LogInformation("Worker processed {Count} scheduled deploy(s).", due.Count);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogError(ex, "OOB scan failed.");
+                logger.LogError(ex, "Worker cycle failed.");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(Math.Max(30, seconds)), stoppingToken);

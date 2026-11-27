@@ -140,7 +140,7 @@ public sealed class ContainerWorkflowService(
                 throw new InvalidOperationException($"Already checked out by {container.CheckedOutBy}.");
             }
 
-            if (container.Status is ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved)
+            if (container.Status is ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled)
             {
                 throw new InvalidOperationException($"Cannot checkout while status is {container.Status}.");
             }
@@ -174,6 +174,7 @@ public sealed class ContainerWorkflowService(
             container.PendingVersionId = null;
             container.ApprovedBy = null;
             container.ApprovedAt = null;
+            container.ActiveScheduleId = null;
         }
 
         await audit.WriteAsync(new AuditEvent
@@ -377,7 +378,7 @@ public sealed class ContainerWorkflowService(
             container = store.Containers.FirstOrDefault(c => c.Id == containerId)
                         ?? throw new KeyNotFoundException("Controlled container not found.");
 
-            if (container.Status is not (ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved) ||
+            if (container.Status is not (ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled) ||
                 container.PendingVersionId is null)
             {
                 throw new InvalidOperationException("Container has no pending version to reject.");
@@ -385,6 +386,19 @@ public sealed class ContainerWorkflowService(
 
             version = store.ContainerVersions.FirstOrDefault(v => v.Id == container.PendingVersionId)
                       ?? throw new InvalidOperationException("Pending version not found.");
+
+            if (container.ActiveScheduleId is Guid schedId)
+            {
+                var sched = store.ScheduledDeploys.FirstOrDefault(s => s.Id == schedId);
+                if (sched is not null && sched.Status == ScheduledDeployStatus.Pending)
+                {
+                    sched.Status = ScheduledDeployStatus.Cancelled;
+                    sched.CancelledAt = DateTimeOffset.UtcNow;
+                    sched.CancelledBy = actor;
+                    sched.CompletedAt = DateTimeOffset.UtcNow;
+                    sched.ErrorMessage = "Cancelled by Reject";
+                }
+            }
         }
 
         await EnsureApproverAsync(actor, container, version, ct);
@@ -398,6 +412,7 @@ public sealed class ContainerWorkflowService(
             container.PendingVersionId = null;
             container.ApprovedBy = null;
             container.ApprovedAt = null;
+            container.ActiveScheduleId = null;
         }
 
         await audit.WriteAsync(new AuditEvent
@@ -412,12 +427,42 @@ public sealed class ContainerWorkflowService(
         return container;
     }
 
-    public async Task<ControlledContainer> DeployAsync(Guid containerId, string actor, CancellationToken ct = default)
+    public Task<ControlledContainer> DeployAsync(Guid containerId, string actor, CancellationToken ct = default) =>
+        DeployAsync(containerId, actor, new DeployOptions(), ct);
+
+    public async Task EnsureCanDeployAsync(Guid containerId, string actor, CancellationToken ct = default)
+    {
+        ControlledContainer container;
+        ContainerVersion version;
+        lock (store.Sync)
+        {
+            container = store.Containers.FirstOrDefault(c => c.Id == containerId)
+                        ?? throw new KeyNotFoundException("Controlled container not found.");
+
+            if (container.Status is not (ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled) ||
+                container.PendingVersionId is null)
+            {
+                throw new InvalidOperationException("Container must be Approved (or Scheduled) before Deploy.");
+            }
+
+            version = store.ContainerVersions.FirstOrDefault(v => v.Id == container.PendingVersionId)
+                      ?? throw new InvalidOperationException("Pending version not found.");
+        }
+
+        await EnsureDeployerAsync(actor, container, version, ct);
+    }
+
+    public async Task<ControlledContainer> DeployAsync(
+        Guid containerId,
+        string actor,
+        DeployOptions options,
+        CancellationToken ct = default)
     {
         ControlledContainer container;
         ContainerVersion version;
         DomainRegistration domain;
         ContainerLinksState links;
+        ContainerVersion? previousDeployed;
         lock (store.Sync)
         {
             container = store.Containers.FirstOrDefault(c => c.Id == containerId)
@@ -426,9 +471,10 @@ public sealed class ContainerWorkflowService(
             domain = store.Domains.FirstOrDefault(d => d.Id == container.DomainId)
                      ?? throw new InvalidOperationException("Domain registration missing for controlled container.");
 
-            if (container.Status != ControlledGpoStatus.Approved || container.PendingVersionId is null)
+            if (container.Status is not (ControlledGpoStatus.Approved or ControlledGpoStatus.Scheduled) ||
+                container.PendingVersionId is null)
             {
-                throw new InvalidOperationException("Container must be Approved before Deploy.");
+                throw new InvalidOperationException("Container must be Approved (or Scheduled) before Deploy.");
             }
 
             version = store.ContainerVersions.FirstOrDefault(v => v.Id == container.PendingVersionId)
@@ -437,8 +483,177 @@ public sealed class ContainerWorkflowService(
             links = string.IsNullOrWhiteSpace(version.LinksSnapshotJson)
                 ? new ContainerLinksState()
                 : JsonSerializer.Deserialize<ContainerLinksState>(version.LinksSnapshotJson!) ?? new ContainerLinksState();
+
+            previousDeployed = store.ContainerVersions
+                .Where(v => v.ControlledContainerId == containerId &&
+                            string.Equals(v.WorkflowState, "Deployed", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(v => v.VersionNumber)
+                .FirstOrDefault();
         }
 
+        await EnsureDeployerAsync(actor, container, version, ct);
+        await AuditBreakGlassUseAsync(actor, "Container.Deploy", container.ContainerKey, ct);
+
+        lock (store.Sync)
+        {
+            store.ContainerLinks[container.Id] = AdaptiveContainerDirectoryService.Normalize(links);
+        }
+
+        AdOperationResult deployResult;
+        try
+        {
+            if (options.SimulateFailure)
+            {
+                throw new InvalidOperationException("Simulated deploy failure (Slice 8 smoke).");
+            }
+
+            deployResult = await directory.DeployLinksAsync(new DeployContainerLinksAdRequest
+            {
+                DomainDnsName = domain.DnsName,
+                ContainerKey = container.ContainerKey,
+                Actor = actor,
+                Links = links
+            }, ct);
+
+            if (!deployResult.Success)
+            {
+                throw new InvalidOperationException(deployResult.Message ?? "AD container Deploy reported failure.");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (options.RollbackOnFailure)
+            {
+                await RollbackContainerAsync(container, previousDeployed, actor, ex.Message, ct);
+                throw new InvalidOperationException(
+                    $"Deploy failed and was rolled back to last controlled links: {ex.Message}", ex);
+            }
+
+            lock (store.Sync)
+            {
+                container.Status = ControlledGpoStatus.Approved;
+                container.ActiveScheduleId = null;
+                version.WorkflowState = "DeployFailed";
+            }
+
+            await audit.WriteAsync(new AuditEvent
+            {
+                Actor = actor,
+                Action = "Container.Deploy",
+                ObjectKey = container.ContainerKey,
+                Outcome = "Failed",
+                DetailJson = JsonSerializer.Serialize(new
+                {
+                    version.VersionNumber,
+                    error = ex.Message,
+                    rollbackOnFailure = false
+                })
+            }, ct);
+
+            throw;
+        }
+
+        lock (store.Sync)
+        {
+            version.WorkflowState = "Deployed";
+            container.LinksHash = version.LinksHash ?? deployResult.SettingsHash;
+            container.Status = ControlledGpoStatus.UnderControl;
+            container.PendingVersionId = null;
+            container.ApprovedBy = null;
+            container.ApprovedAt = null;
+            container.ActiveScheduleId = null;
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = actor,
+            Action = "Container.Deploy",
+            ObjectKey = container.ContainerKey,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                version.VersionNumber,
+                adMode = deployResult.Mode.ToString(),
+                adMessage = deployResult.Message,
+                plannedSteps = deployResult.PlannedSteps,
+                rollbackOnFailure = options.RollbackOnFailure
+            })
+        }, ct);
+
+        return container;
+    }
+
+    private async Task RollbackContainerAsync(
+        ControlledContainer container,
+        ContainerVersion? previousDeployed,
+        string actor,
+        string failureMessage,
+        CancellationToken ct)
+    {
+        DomainRegistration? domain;
+        ContainerLinksState restoreLinks;
+        string? restoreHash;
+        int? restoreVersion;
+        lock (store.Sync)
+        {
+            domain = store.Domains.FirstOrDefault(d => d.Id == container.DomainId);
+            restoreLinks = string.IsNullOrWhiteSpace(previousDeployed?.LinksSnapshotJson)
+                ? new ContainerLinksState()
+                : JsonSerializer.Deserialize<ContainerLinksState>(previousDeployed!.LinksSnapshotJson!)
+                  ?? new ContainerLinksState();
+            restoreLinks = AdaptiveContainerDirectoryService.Normalize(restoreLinks);
+            restoreHash = previousDeployed?.LinksHash ?? container.LinksHash;
+            restoreVersion = previousDeployed?.VersionNumber;
+
+            store.ContainerLinks[container.Id] = AdaptiveContainerDirectoryService.CloneLinks(restoreLinks);
+            container.LinksHash = restoreHash;
+            container.Status = ControlledGpoStatus.UnderControl;
+            container.PendingVersionId = null;
+            container.ApprovedBy = null;
+            container.ApprovedAt = null;
+            container.ActiveScheduleId = null;
+
+            var pending = store.ContainerVersions.FirstOrDefault(v =>
+                v.ControlledContainerId == container.Id &&
+                string.Equals(v.WorkflowState, "Approved", StringComparison.OrdinalIgnoreCase));
+            if (pending is not null)
+            {
+                pending.WorkflowState = "DeployFailed";
+            }
+        }
+
+        if (domain is not null)
+        {
+            await directory.DeployLinksAsync(new DeployContainerLinksAdRequest
+            {
+                DomainDnsName = domain.DnsName,
+                ContainerKey = container.ContainerKey,
+                Actor = actor,
+                Links = restoreLinks
+            }, ct);
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = actor,
+            Action = "Container.DeployRollback",
+            ObjectKey = container.ContainerKey,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                failureMessage,
+                restoredVersion = restoreVersion,
+                restoredHash = restoreHash
+            })
+        }, ct);
+    }
+
+    private async Task EnsureDeployerAsync(
+        string actor,
+        ControlledContainer container,
+        ContainerVersion version,
+        CancellationToken ct)
+    {
         await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
         var breakGlassActive = await breakGlass.HasActiveBreakGlassAsync(actor, ct);
         if (!breakGlassActive && string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
@@ -454,44 +669,6 @@ public sealed class ContainerWorkflowService(
         {
             throw new UnauthorizedAccessException("Deployer (or Approver in combined mode) role required.");
         }
-
-        await AuditBreakGlassUseAsync(actor, "Container.Deploy", container.ContainerKey, ct);
-
-        var deployResult = await directory.DeployLinksAsync(new DeployContainerLinksAdRequest
-        {
-            DomainDnsName = domain.DnsName,
-            ContainerKey = container.ContainerKey,
-            Actor = actor,
-            Links = links
-        }, ct);
-
-        lock (store.Sync)
-        {
-            store.ContainerLinks[container.Id] = AdaptiveContainerDirectoryService.Normalize(links);
-            version.WorkflowState = "Deployed";
-            container.LinksHash = version.LinksHash ?? deployResult.SettingsHash;
-            container.Status = ControlledGpoStatus.UnderControl;
-            container.PendingVersionId = null;
-            container.ApprovedBy = null;
-            container.ApprovedAt = null;
-        }
-
-        await audit.WriteAsync(new AuditEvent
-        {
-            Actor = actor,
-            Action = "Container.Deploy",
-            ObjectKey = container.ContainerKey,
-            Outcome = "Success",
-            DetailJson = JsonSerializer.Serialize(new
-            {
-                version.VersionNumber,
-                adMode = deployResult.Mode.ToString(),
-                adMessage = deployResult.Message,
-                plannedSteps = deployResult.PlannedSteps
-            })
-        }, ct);
-
-        return container;
     }
 
     public Task<IReadOnlyList<ContainerVersion>> GetHistoryAsync(Guid containerId, CancellationToken ct = default)

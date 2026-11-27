@@ -1,19 +1,19 @@
 # Group Policy Director
 
 Moderner AGPM-Nachfolger mit Change-Control für Group Policy (on-prem first).  
-**Slice 7:** GPO Naming-Regex, Restricted Policies (Area-Deny), Welcome Wizard (skippable). Branding: **Referenz-Tools**. Kein Intune.
+**Slice 8:** Scheduled Deploy + Rollback-on-fail (GPO & Container), Deploy-Queue/Status-UI. Branding: **Referenz-Tools**. Kein Intune.
 
 ## Struktur
 
 ```
-src/GroupPolicyDirector.Api/             ASP.NET Core REST-API
-src/GroupPolicyDirector.Worker/          Hintergrunddienst (OOB-Scan)
+src/GroupPolicyDirector.Api/             ASP.NET Core REST-API (+ scheduled-deploy processor)
+src/GroupPolicyDirector.Worker/          Hintergrunddienst (OOB-Scan + ProcessDue)
 src/GroupPolicyDirector.Core/            Domain & Contracts (inkl. Ad/, Agpm/, Authz/)
 src/GroupPolicyDirector.Infrastructure/  AD adapters + Services
 ui/                                      React + TypeScript (Vite)
 database/schema/                         SQL Server Schema-Stubs
 fixtures/agpm-history-sample.zip         AGPM-style dry-run fixture
-docs/slice-1.md … docs/slice-7.md        Slice-Notizen
+docs/slice-1.md … docs/slice-8.md        Slice-Notizen
 ```
 
 ## Voraussetzungen
@@ -40,14 +40,13 @@ Optional Worker:
 dotnet run --project src/GroupPolicyDirector.Worker
 ```
 
-## Workflow (Slice 7)
+## Workflow (Slice 8)
 
-1. Product Admin: optional **Welcome Wizard** (Complete / Skip)
-2. Domain registrieren → Take Control und/oder **Create GPO** (Naming-Regex wenn aktiv)
-3. **Restricted Policies:** Area-Pfad + Allowed Trustees → andere Editoren denied
-4. Editor Checkout → Settings (restricted areas blockiert) → Check-in → Approve → Deploy
-5. **Rename** unterliegt derselben Naming-Regel
-6. Break Glass / Auditor / Audit / Diff / SMTP unverändert (kein Auto-Reset, kein Intune)
+1. Editor → Check-in → Approver → Approve
+2. Deployer: **Deploy now** oder **Schedule Deploy** (+ optional Rollback-on-fail)
+3. Deploy Queue zeigt Pending / Succeeded / Failed / RolledBack / Cancelled
+4. Fällige Jobs: Hosted Processor oder `POST /api/deploy-queue/process-due`
+5. Simulate-fail-Flag für Rollback-Smoke (DryRun)
 
 Demo-Akteur: Header `X-Gpd-Actor` (`gpd-admin`, `gpd-editor`, `gpd-approver`, `gpd-deployer`, `gpd-breakglass`, `gpd-auditor`).
 
@@ -55,23 +54,24 @@ Demo-Akteur: Header `X-Gpd-Actor` (`gpd-admin`, `gpd-editor`, `gpd-approver`, `g
 
 | Methode | Pfad | Zweck |
 |---------|------|--------|
-| GET | `/api/health` | Health + AD mode (slice=7) |
-| GET/PUT | `/api/settings/general` | Naming regex + wizard status |
-| POST | `/api/gpos` | Create GPO (naming enforced) |
-| POST | `/api/gpos/{id}/rename` | Rename (naming enforced) |
-| GET/POST/DELETE | `/api/restricted-policies` | Area-level Restricted Policies |
-| GET/POST | `/api/wizard`, `/complete`, `/skip` | Welcome Wizard |
-| … | Slice 6 endpoints | Break Glass, Audit, Delegation, Containers |
+| GET | `/api/health` | Health + AD mode (slice=8) |
+| POST | `/api/gpos/{id}/schedule-deploy` | GPO Deploy planen |
+| POST | `/api/gpos/{id}/cancel-schedule` | GPO-Schedule stornieren |
+| POST | `/api/containers/{id}/schedule-deploy` | Container Deploy planen |
+| GET | `/api/deploy-queue` | Queue / Status |
+| POST | `/api/deploy-queue/process-due` | Fällige Jobs manuell |
+| … | Slice 7 endpoints | Naming, Restricted, Wizard, … |
 
 ## Auth / AD / SMTP
 
 - **Auth Dev:** `Auth:UseNegotiate=false` → Stub + `X-Gpd-Actor`
 - **AD:** `Gpd:Ad:ForceDryRun` erzwingt DryRun; sonst Auto-Detect
 - **SMTP:** Runtime-Overlay über `Smtp:*`; Host leer = log-only; **kein Auto-Reset**
+- **Schedule poll:** `ScheduledDeploy:PollIntervalSeconds` (Default 10)
 
-## Nicht in Slice 7
+## Nicht in Slice 8
 
-Intune, Auto-OOB-Reset, Tier-/ESAE-Gates, Entra SSO, geplantes Deploy, SQL-Persistenz, Setting-Level Restricted Policies.
+Intune, Auto-OOB-Reset, Tier-/ESAE-Gates, Entra SSO, SQL-Persistenz.
 
 ## Lizenz / Marke
 
