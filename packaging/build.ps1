@@ -1,7 +1,7 @@
-<#
+﻿<#
 .SYNOPSIS
-  Windows-seitiger Publish von API/Worker (win-x64 self-contained) + UI + ZIP.
-  MSI: auf Linux per packaging/build.sh (wixl) oder WiX Toolset mit packaging/wix.
+  Windows publish of API/Worker (win-x64 self-contained) + UI + ZIP + MSI.
+  MSI requires WiX Toolset CLI v5+ (`wix`); Linux/cloud MSI uses packaging/build.sh (wixl).
 #>
 [CmdletBinding()]
 param(
@@ -55,4 +55,40 @@ $zip = Join-Path $Out "GroupPolicyDirector-$Version-win-x64.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $Payload '*') -DestinationPath $zip
 Write-Host "ZIP: $zip"
-Write-Host 'MSI: packaging/build.sh (wixl unter Linux) erzeugt GroupPolicyDirector-*-win-x64.msi aus derselben Payload.'
+
+function Build-Msi {
+    $wix = Get-Command wix -ErrorAction SilentlyContinue
+    if (-not $wix) {
+        Write-Host '!! wix (WiX Toolset CLI) not found — skipping MSI (ZIP + Setup.ps1 remain).'
+        Write-Host '   Install: winget install --id WiXToolset.WiXCLI -e'
+        Write-Host '   Then:    wix eula accept wix7'
+        return
+    }
+
+    Write-Host '==> Build MSI with WiX CLI'
+    $msi = Join-Path $Out "GroupPolicyDirector-$Version-win-x64.msi"
+    $product = Join-Path $Root 'packaging/wix/Product.windows.wxs'
+    if (-not (Test-Path $product)) {
+        throw "Missing WiX product source: $product"
+    }
+
+    & $wix.Source build `
+        -arch x64 `
+        -o $msi `
+        -b "PayloadSource=$Payload" `
+        $product
+    if ($LASTEXITCODE -ne 0) {
+        throw "wix build failed with exit code $LASTEXITCODE"
+    }
+    if (-not (Test-Path $msi)) {
+        throw "MSI was not produced at $msi"
+    }
+
+    $sizeMb = [math]::Round((Get-Item $msi).Length / 1MB, 1)
+    Write-Host "MSI: $msi ($sizeMb MB)"
+}
+
+Build-Msi
+Write-Host '==> Done'
+Get-ChildItem $Out -File | Format-Table Name, Length -AutoSize
+Write-Host "Payload: $Payload"
