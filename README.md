@@ -1,25 +1,25 @@
 # Group Policy Director
 
 Moderner AGPM-Nachfolger mit Change-Control für Group Policy (on-prem first).  
-**Slice 2:** Approve / Deploy mit SoD, editierbarer GPMC-Settings-Tree, End-to-End-Workflow in der UI (AD-Fakes ohne Domäne).
+**Slice 3:** Take Control / Temp-GPO AD-Pfad (LDAP live oder DryRun), OOB baseline-vs-live + konfigurierbares SMTP, verdrahtet in Approve/Deploy/Settings Tree.
 
 ## Struktur
 
 ```
 src/GroupPolicyDirector.Api/             ASP.NET Core REST-API
 src/GroupPolicyDirector.Worker/          Hintergrunddienst (OOB-Scan)
-src/GroupPolicyDirector.Core/            Domain & Contracts
-src/GroupPolicyDirector.Infrastructure/  In-Memory-Stubs (SQL folgt)
+src/GroupPolicyDirector.Core/            Domain & Contracts (inkl. Ad/)
+src/GroupPolicyDirector.Infrastructure/  AD adapters + Services
 ui/                                      React + TypeScript (Vite)
 database/schema/                         SQL Server Schema-Stubs
-docs/slice-1.md, docs/slice-2.md         Slice-Notizen
+docs/slice-1.md … docs/slice-3.md        Slice-Notizen
 ```
 
 ## Voraussetzungen
 
 - .NET 9 SDK
 - Node.js 20+ (für die UI)
-- Windows (Zielplattform); lokale Dev ohne Domäne nutzt Auth-Stub + Demo-Akteure
+- Windows (Zielplattform); lokale Dev ohne Domäne nutzt **DryRun** + Auth-Stub + Demo-Akteure
 
 ## Schnellstart
 
@@ -39,47 +39,39 @@ Optional Worker:
 dotnet run --project src/GroupPolicyDirector.Worker
 ```
 
-## Workflow (Slice 2)
+## Workflow (Slice 3)
 
-1. Domain registrieren → Take Control  
-2. **Editor** (`CONTOSO\gpd-editor`): Checkout → Settings Tree editieren → Check-in  
+1. Domain registrieren → **Take Control** (ACL-Plan live/dry-run + Baseline)
+2. **Editor** (`CONTOSO\gpd-editor`): Checkout (Temp-GPO) → Settings Tree → Check-in  
 3. **Approver** (`CONTOSO\gpd-approver`): Approve (oder Reject)  
-4. **Deployer** (`CONTOSO\gpd-deployer`): Deploy  
+4. **Deployer** (`CONTOSO\gpd-deployer`): Deploy (Temp → Production hook)  
 
-SoD: der Editor der Pending-Version darf weder Approve noch Deploy. Trustee sind AD-Admin-Rollengruppen (`CONTOSO\GPD-Editors` / `Approvers` / `Deployers`); Mitgliedschaft zur Login-Zeit (Stub-Tabelle ohne Domäne).
+OOB: `Simulate live drift` (nur DryRun) → `OOB-Scan + SMTP`. Kein Auto-Reset.
 
-Demo-Akteur in der UI umschalten — API-Header `X-Gpd-Actor`.
+SoD und AD-Admin-Gruppen-Trustee wie Slice 2. Demo-Akteur: Header `X-Gpd-Actor`.
 
 ## API (Auszug)
 
 | Methode | Pfad | Zweck |
 |---------|------|--------|
-| GET | `/api/me` | Identität, Rollen, Demo-Akteure |
-| POST | `/api/domains` | Domain registrieren |
-| POST | `/api/gpos/take-control` | GPO unter Kontrolle |
-| POST | `/api/gpos/{id}/checkout` | Checkout |
-| GET/PUT | `/api/gpos/{id}/settings-tree` | Policy-Tree lesen / editieren |
-| POST | `/api/gpos/{id}/check-in` | Check-in → Waiting Approval |
-| POST | `/api/gpos/{id}/approve` | Freigabe |
-| POST | `/api/gpos/{id}/reject` | Ablehnung |
-| POST | `/api/gpos/{id}/deploy` | Deploy (Produktion-Stub) |
-| GET | `/api/gpos/{id}/history` | Historie |
-| POST/GET | `/api/delegation/*` | Product-/Objektrollen an AD-Gruppen |
-| POST | `/api/oob/scan` | OOB-Erkennung + Mail-Stub |
-| POST | `/api/agpm/import/dry-run` | AGPM-Archiv Dry-Run |
+| GET | `/api/health` | Health + AD mode |
+| GET | `/api/ad/environment` | Domain-join / GPMC / DryRun |
+| POST | `/api/ad/simulate-drift` | DryRun OOB demo |
+| POST | `/api/gpos/take-control` | Take Control (+ AD hook) |
+| POST | `/api/gpos/{id}/checkout` | Checkout Temp-GPO |
+| GET/PUT | `/api/gpos/{id}/settings-tree` | Policy-Tree |
+| POST | `/api/gpos/{id}/check-in` / `approve` / `reject` / `deploy` | Workflow |
+| POST/GET | `/api/oob/scan`, `/api/oob` | OOB detection + list |
 
-## Auth
+## Auth / AD / SMTP
 
-- **Entwicklung:** `Auth:UseNegotiate=false` → Stub + optional `X-Gpd-Actor`.
-- **Produktion (Platzhalter):** `Auth:UseNegotiate=true` aktiviert Windows Negotiate/Kerberos.
+- **Auth Dev:** `Auth:UseNegotiate=false` → Stub + `X-Gpd-Actor`
+- **AD:** `Gpd:Ad:ForceDryRun` erzwingt DryRun; sonst Auto-Detect
+- **SMTP:** `Smtp:Host` leer = log-only; gesetzt = echter SMTP-Send
 
-## OOB (Mail-first)
+## Nicht in Slice 3
 
-Unverändert: Drift-Erkennung + SMTP-Stub. **Kein** Auto-Reset. **Keine** Tier-Gates.
-
-## Nicht in Slice 2
-
-Intune, Entra SSO, Tier-/ESAE-Gates, Auto-OOB-Reset, echte AD/GPMC-Schreibpfade, Container-Links.
+Intune, Entra SSO, Tier-/ESAE-Gates, Auto-OOB-Reset, vollständiger GPMC-COM CopyGPO, Container-Links, SQL-Persistenz.
 
 ## Lizenz / Marke
 

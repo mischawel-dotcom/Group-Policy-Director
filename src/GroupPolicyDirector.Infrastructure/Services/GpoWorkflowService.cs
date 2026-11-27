@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using GroupPolicyDirector.Core.Ad;
 using GroupPolicyDirector.Core.Authz;
 using GroupPolicyDirector.Core.Domain;
 using GroupPolicyDirector.Core.Workflow;
@@ -9,15 +10,16 @@ using GroupPolicyDirector.Infrastructure.Persistence;
 namespace GroupPolicyDirector.Infrastructure.Services;
 
 /// <summary>
-/// Slice 2 workflow: Take Control → Checkout → Edit Settings → Check-in → Approve → Deploy.
+/// Slice 3 workflow: Take Control → Checkout (Temp GPO) → Edit → Check-in → Approve → Deploy.
+/// AD/GPMC via <see cref="IGpoDirectoryService"/> (live LDAP when domain-joined, otherwise dry-run).
 /// SoD: Editor who authored the pending version cannot Approve or Deploy.
-/// AD/GPO ACL lockdown and real Temp-GPO creation remain placeholders without a domain.
 /// </summary>
 public sealed class GpoWorkflowService(
     GpdStore store,
     IAuditService audit,
     IOobDetectionService oob,
-    IDelegationService delegation) : IGpoWorkflowService
+    IDelegationService delegation,
+    IGpoDirectoryService directory) : IGpoWorkflowService
 {
     public Task<IReadOnlyList<ControlledGpo>> ListControlledAsync(CancellationToken ct = default)
     {
@@ -37,12 +39,11 @@ public sealed class GpoWorkflowService(
     {
         await delegation.EnsureDemoTrusteesSeededAsync(ct);
 
+        DomainRegistration domain;
         lock (store.Sync)
         {
-            if (!store.Domains.Any(d => d.Id == domainId))
-            {
-                throw new InvalidOperationException("Domain is not registered.");
-            }
+            domain = store.Domains.FirstOrDefault(d => d.Id == domainId)
+                     ?? throw new InvalidOperationException("Domain is not registered.");
 
             if (store.Gpos.Any(g => g.ProductionGpoId.Equals(productionGpoId, StringComparison.OrdinalIgnoreCase)))
             {
@@ -50,9 +51,30 @@ public sealed class GpoWorkflowService(
             }
         }
 
+        var adResult = await directory.TakeControlAsync(new TakeControlAdRequest
+        {
+            DomainDnsName = domain.DnsName,
+            ProductionGpoId = productionGpoId,
+            DisplayName = displayName,
+            Actor = actor
+        }, ct);
+
         var tree = PolicyTreeFactory.CreateBaseline(displayName);
         var json = JsonSerializer.Serialize(tree);
-        var hash = ComputeHash(json);
+        // Prefer AD-reported baseline hash when present; otherwise hash of settings tree.
+        var hash = !string.IsNullOrWhiteSpace(adResult.SettingsHash)
+            ? adResult.SettingsHash!
+            : ComputeHash(json);
+
+        // Align dry-run live fingerprint with the controlled tree hash used by OOB
+        // when AD did not supply an independent production hash.
+        if (adResult.Mode == AdOperationMode.DryRun)
+        {
+            var treeHash = ComputeHash(json);
+            await directory.SetControlledBaselineAsync(productionGpoId, treeHash, displayName, ct);
+            hash = treeHash;
+        }
+
         var gpo = new ControlledGpo
         {
             DomainId = domainId,
@@ -86,7 +108,13 @@ public sealed class GpoWorkflowService(
             Action = "Gpo.TakeControl",
             ObjectKey = productionGpoId,
             Outcome = "Success",
-            DetailJson = JsonSerializer.Serialize(new { gpo.DisplayName, note = "ACL lockdown stub — domain-joined worker required" })
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                gpo.DisplayName,
+                adMode = adResult.Mode.ToString(),
+                adMessage = adResult.Message,
+                plannedSteps = adResult.PlannedSteps
+            })
         }, ct);
 
         return gpo;
@@ -101,10 +129,14 @@ public sealed class GpoWorkflowService(
         await delegation.EnsureDemoTrusteesSeededAsync(ct);
 
         ControlledGpo gpo;
+        DomainRegistration domain;
         lock (store.Sync)
         {
             gpo = store.Gpos.FirstOrDefault(g => g.Id == controlledGpoId)
                   ?? throw new KeyNotFoundException("Controlled GPO not found.");
+
+            domain = store.Domains.FirstOrDefault(d => d.Id == gpo.DomainId)
+                     ?? throw new InvalidOperationException("Domain registration missing for controlled GPO.");
 
             if (gpo.Status is ControlledGpoStatus.CheckedOut)
             {
@@ -135,6 +167,14 @@ public sealed class GpoWorkflowService(
                 "Out-of-band change detected. Review Diff, then choose Rollback to Last Controlled or Checkout anyway.");
         }
 
+        var tempResult = await directory.CreateTempGpoAsync(new TempGpoAdRequest
+        {
+            DomainDnsName = domain.DnsName,
+            ProductionGpoId = gpo.ProductionGpoId,
+            DisplayName = gpo.DisplayName,
+            Actor = actor
+        }, ct);
+
         lock (store.Sync)
         {
             if (!store.SettingsTrees.ContainsKey(gpo.Id))
@@ -143,14 +183,13 @@ public sealed class GpoWorkflowService(
             }
             else
             {
-                // Working copy for temp edit (clone production tree).
                 store.SettingsTrees[gpo.Id] = PolicyTreeFactory.Clone(store.SettingsTrees[gpo.Id]);
             }
 
             gpo.Status = ControlledGpoStatus.CheckedOut;
             gpo.CheckedOutBy = actor;
             gpo.CheckedOutAt = DateTimeOffset.UtcNow;
-            gpo.TempGpoId = $"TEMP-{{{Guid.NewGuid():D}}}";
+            gpo.TempGpoId = tempResult.TempGpoId ?? $"TEMP-{{{Guid.NewGuid():D}}}";
             gpo.PendingVersionId = null;
             gpo.ApprovedBy = null;
             gpo.ApprovedAt = null;
@@ -162,7 +201,14 @@ public sealed class GpoWorkflowService(
             Action = "Gpo.Checkout",
             ObjectKey = gpo.ProductionGpoId,
             Outcome = "Success",
-            DetailJson = JsonSerializer.Serialize(new { gpo.TempGpoId, checkoutAnyway })
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                gpo.TempGpoId,
+                checkoutAnyway,
+                adMode = tempResult.Mode.ToString(),
+                adMessage = tempResult.Message,
+                plannedSteps = tempResult.PlannedSteps
+            })
         }, ct);
 
         return gpo;
@@ -242,10 +288,15 @@ public sealed class GpoWorkflowService(
 
         GpoVersion version;
         ControlledGpo gpo;
+        string? tempId;
+        DomainRegistration? domain;
         lock (store.Sync)
         {
             gpo = store.Gpos.FirstOrDefault(g => g.Id == controlledGpoId)
                   ?? throw new KeyNotFoundException("Controlled GPO not found.");
+
+            domain = store.Domains.FirstOrDefault(d => d.Id == gpo.DomainId);
+            tempId = gpo.TempGpoId;
 
             if (gpo.Status != ControlledGpoStatus.CheckedOut ||
                 !string.Equals(gpo.CheckedOutBy, actor, StringComparison.OrdinalIgnoreCase))
@@ -282,7 +333,7 @@ public sealed class GpoWorkflowService(
             gpo.PendingVersionId = version.Id;
             gpo.CheckedOutBy = null;
             gpo.CheckedOutAt = null;
-            gpo.TempGpoId = null;
+            // Temp GPO retained until Deploy (or cleaned on Reject).
             gpo.ApprovedBy = null;
             gpo.ApprovedAt = null;
         }
@@ -293,7 +344,14 @@ public sealed class GpoWorkflowService(
             Action = "Gpo.CheckIn",
             ObjectKey = gpo.ProductionGpoId,
             Outcome = "Success",
-            DetailJson = JsonSerializer.Serialize(new { version.VersionNumber, version.Comment, status = "WaitingApproval" })
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                version.VersionNumber,
+                version.Comment,
+                status = "WaitingApproval",
+                tempGpoId = tempId,
+                domain = domain?.DnsName
+            })
         }, ct);
 
         return version;
@@ -358,10 +416,15 @@ public sealed class GpoWorkflowService(
 
         ControlledGpo gpo;
         GpoVersion version;
+        string? tempId;
+        DomainRegistration? domain;
         lock (store.Sync)
         {
             gpo = store.Gpos.FirstOrDefault(g => g.Id == controlledGpoId)
                   ?? throw new KeyNotFoundException("Controlled GPO not found.");
+
+            domain = store.Domains.FirstOrDefault(d => d.Id == gpo.DomainId);
+            tempId = gpo.TempGpoId;
 
             if (gpo.Status is not (ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved) ||
                 gpo.PendingVersionId is null)
@@ -375,6 +438,11 @@ public sealed class GpoWorkflowService(
 
         await EnsureApproverAsync(actor, gpo, version, ct);
 
+        if (!string.IsNullOrWhiteSpace(tempId) && domain is not null)
+        {
+            await directory.DeleteTempGpoAsync(domain.DnsName, tempId, actor, ct);
+        }
+
         lock (store.Sync)
         {
             version.WorkflowState = "Rejected";
@@ -382,6 +450,7 @@ public sealed class GpoWorkflowService(
             version.ReviewComment = comment.Trim();
             gpo.Status = ControlledGpoStatus.UnderControl;
             gpo.PendingVersionId = null;
+            gpo.TempGpoId = null;
             gpo.ApprovedBy = null;
             gpo.ApprovedAt = null;
         }
@@ -402,10 +471,17 @@ public sealed class GpoWorkflowService(
     {
         ControlledGpo gpo;
         GpoVersion version;
+        DomainRegistration domain;
+        string? tempId;
         lock (store.Sync)
         {
             gpo = store.Gpos.FirstOrDefault(g => g.Id == controlledGpoId)
                   ?? throw new KeyNotFoundException("Controlled GPO not found.");
+
+            domain = store.Domains.FirstOrDefault(d => d.Id == gpo.DomainId)
+                     ?? throw new InvalidOperationException("Domain registration missing for controlled GPO.");
+
+            tempId = gpo.TempGpoId;
 
             if (gpo.Status != ControlledGpoStatus.Approved || gpo.PendingVersionId is null)
             {
@@ -416,7 +492,6 @@ public sealed class GpoWorkflowService(
                       ?? throw new InvalidOperationException("Pending version not found.");
         }
 
-        // SoD: Editor who authored the change cannot deploy it.
         if (string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("SoD: Editor who checked in this version cannot Deploy it.");
@@ -424,16 +499,13 @@ public sealed class GpoWorkflowService(
 
         var isDeployer = await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Deployer, ct);
         var isApprover = await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Approver, ct);
-        // Combined Approver+Deployer mode (Referenz-Tool default): Approver may also deploy if granted Deployer OR Approver-only when deployer grant exists separately.
         if (!isDeployer && !isApprover)
         {
-            // Product Admin is not a Deployer by default (SoD / Referenz-Tools: admin configures, does not self-deploy without role).
             throw new UnauthorizedAccessException("Deployer (or Approver in combined mode) role required.");
         }
 
         if (!isDeployer && isApprover)
         {
-            // Allow Approver to deploy only when no separate Deployer grant exists on OU/GPO (combined mode).
             var hasSeparateDeployer = await HasAnyDeployerGrantAsync(gpo.ProductionGpoId, ct);
             if (hasSeparateDeployer)
             {
@@ -441,9 +513,17 @@ public sealed class GpoWorkflowService(
             }
         }
 
+        var deployResult = await directory.DeployTempToProductionAsync(new DeployAdRequest
+        {
+            DomainDnsName = domain.DnsName,
+            ProductionGpoId = gpo.ProductionGpoId,
+            TempGpoId = tempId ?? "(none)",
+            Actor = actor,
+            SettingsSnapshotJson = version.SettingsSnapshotJson
+        }, ct);
+
         lock (store.Sync)
         {
-            // Apply approved snapshot as production tree (live deploy stub — no AD write without domain).
             if (!string.IsNullOrWhiteSpace(version.SettingsSnapshotJson))
             {
                 var applied = JsonSerializer.Deserialize<PolicyTreeNode>(version.SettingsSnapshotJson);
@@ -457,9 +537,19 @@ public sealed class GpoWorkflowService(
             gpo.SettingsHash = version.SettingsHash;
             gpo.Status = ControlledGpoStatus.UnderControl;
             gpo.PendingVersionId = null;
-            // Keep ApprovedBy for audit trail on object briefly — clear after deploy for next cycle.
+            gpo.TempGpoId = null;
             gpo.ApprovedBy = null;
             gpo.ApprovedAt = null;
+        }
+
+        // Keep dry-run live fingerprint aligned with deployed controlled hash for OOB.
+        if (!string.IsNullOrWhiteSpace(version.SettingsHash))
+        {
+            await directory.SetControlledBaselineAsync(
+                gpo.ProductionGpoId,
+                version.SettingsHash!,
+                gpo.DisplayName,
+                ct);
         }
 
         await audit.WriteAsync(new AuditEvent
@@ -471,7 +561,9 @@ public sealed class GpoWorkflowService(
             DetailJson = JsonSerializer.Serialize(new
             {
                 version.VersionNumber,
-                note = "Production apply stub — domain-joined worker writes Temp → Production"
+                adMode = deployResult.Mode.ToString(),
+                adMessage = deployResult.Message,
+                plannedSteps = deployResult.PlannedSteps
             })
         }, ct);
 
