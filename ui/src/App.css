@@ -1,0 +1,228 @@
+:root {
+  --ink: #14201a;
+  --muted: #4a5c52;
+  --paper: #f3f6f2;
+  --panel: rgba(255, 255, 255, 0.82);
+  --line: #c5d2c8;
+  --accent: #1f6b4a;
+  --accent-deep: #0f3d2a;
+  --warn: #8a2e1a;
+  --ok: #1f6b4a;
+  --hero-glow: radial-gradient(ellipse at 20% 0%, #d7e8dc 0%, transparent 55%),
+    radial-gradient(ellipse at 90% 10%, #e8e2d4 0%, transparent 40%),
+    linear-gradient(160deg, #eef3ef 0%, #dfe9e2 45%, #cfdcd3 100%);
+  font-family: "Segoe UI", "IBM Plex Sans", "Source Sans 3", sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  line-height: 1.45;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--hero-glow);
+}
+
+.app-shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.hero {
+  padding: 2.5rem 0 1.5rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 1.5rem;
+}
+
+.brand {
+  margin: 0 0 0.75rem;
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--accent-deep);
+}
+
+.hero h1 {
+  margin: 0 0 0.5rem;
+  font-size: clamp(1.15rem, 2.4vw, 1.5rem);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.lede {
+  margin: 0;
+  max-width: 36rem;
+  color: var(--muted);
+}
+
+.identity {
+  margin: 1rem 0 0;
+  font-size: 0.9rem;
+  color: var(--accent);
+}
+
+.banner {
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  border-left: 4px solid var(--ok);
+  background: var(--panel);
+}
+
+.banner.error {
+  border-left-color: var(--warn);
+  color: var(--warn);
+}
+
+.layout {
+  display: grid;
+  gap: 1rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 1rem 1.1rem 1.15rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+  color: var(--accent-deep);
+}
+
+.row,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  min-width: 12rem;
+  flex: 1;
+}
+
+input {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+button {
+  border: 1px solid var(--accent-deep);
+  background: var(--accent);
+  color: #fff;
+  padding: 0.5rem 0.9rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--accent-deep);
+}
+
+button:hover {
+  filter: brightness(1.05);
+}
+
+.plain,
+.gpo-list,
+.tree,
+.history {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.gpo-list {
+  list-style: none;
+  padding: 0;
+}
+
+.gpo-list button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  background: #fff;
+  color: var(--ink);
+  border-color: var(--line);
+  text-align: left;
+  margin-bottom: 0.4rem;
+}
+
+.gpo-list button.selected {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.muted {
+  color: var(--muted);
+  margin: 0;
+}
+
+.tree {
+  list-style: none;
+  padding-left: 0;
+  font-size: 0.92rem;
+}
+
+.tree ul {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+}
+
+.tree-label em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.tree-label code {
+  font-size: 0.85em;
+  color: var(--accent-deep);
+}
+
+.history li {
+  margin-bottom: 0.45rem;
+}
+
+.history span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.report {
+  background: #122018;
+  color: #d7ebe0;
+  padding: 0.85rem;
+  overflow: auto;
+  font-size: 0.8rem;
+}
+
+footer {
+  margin-top: 2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (min-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr 1fr;
+  }
+}
