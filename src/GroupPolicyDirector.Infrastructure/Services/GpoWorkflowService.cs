@@ -424,10 +424,10 @@ public sealed class GpoWorkflowService(
 
         var isDeployer = await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Deployer, ct);
         var isApprover = await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Approver, ct);
-        // Combined Approver+Deployer mode (CMGPI default): Approver may also deploy if granted Deployer OR Approver-only when deployer grant exists separately.
+        // Combined Approver+Deployer mode (Referenz-Tool default): Approver may also deploy if granted Deployer OR Approver-only when deployer grant exists separately.
         if (!isDeployer && !isApprover)
         {
-            // Product Admin is not a Deployer by default (SoD / CMGPI: admin configures, does not self-deploy without role).
+            // Product Admin is not a Deployer by default (SoD / Referenz-Tools: admin configures, does not self-deploy without role).
             throw new UnauthorizedAccessException("Deployer (or Approver in combined mode) role required.");
         }
 

@@ -1,7 +1,7 @@
 namespace GroupPolicyDirector.Core.Authz;
 
 /// <summary>
-/// Global product roles (CMGPI/SDM-aligned). Assigned in-tool; trustees are AD groups/users.
+/// Global product roles (aligned with Referenz-Tools). Assigned in-tool; trustees are AD groups/users.
 /// </summary>
 public enum ProductRole
 {
