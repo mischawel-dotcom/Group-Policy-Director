@@ -9,7 +9,7 @@ public sealed class Worker(ILogger<Worker> logger, IOobDetectionService oob, ICo
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Group Policy Director Worker started (OOB scan stub).");
+        logger.LogInformation("Group Policy Director Worker started (OOB baseline-vs-live scan).");
 
         while (!stoppingToken.IsCancellationRequested)
         {

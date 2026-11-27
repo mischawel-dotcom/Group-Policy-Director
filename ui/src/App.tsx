@@ -26,6 +26,7 @@ type ControlledGpo = {
   tempGpoId?: string
   pendingVersionId?: string
   approvedBy?: string
+  settingsHash?: string
 }
 
 type GpoVersion = {
@@ -48,6 +49,28 @@ type PolicyTreeNode = {
   isStub?: boolean
   settingType?: string
   children: PolicyTreeNode[]
+}
+
+type AdEnvironment = {
+  isDomainJoined: boolean
+  computerDnsDomain?: string
+  computerNetBiosDomain?: string
+  directoryReachable: boolean
+  gpmcAvailable: boolean
+  forceDryRunConfigured: boolean
+  effectiveMode: number
+  modeReason: string
+}
+
+type OobDetection = {
+  id: string
+  controlledGpoId: string
+  detectedAt: string
+  productionHash: string
+  lastControlledHash: string
+  diffSummary?: string
+  emailSent: boolean
+  resolution?: string
 }
 
 async function api<T>(path: string, init?: RequestInit, actor?: string): Promise<T> {
@@ -79,6 +102,10 @@ function statusLabel(status: number): string {
     case 5: return 'Approved'
     default: return String(status)
   }
+}
+
+function adModeLabel(mode: number): string {
+  return mode === 1 ? 'Live' : 'DryRun'
 }
 
 function TreeNodeView({
@@ -166,6 +193,8 @@ export default function App() {
   const [selected, setSelected] = useState<ControlledGpo | null>(null)
   const [tree, setTree] = useState<PolicyTreeNode | null>(null)
   const [history, setHistory] = useState<GpoVersion[]>([])
+  const [adEnv, setAdEnv] = useState<AdEnvironment | null>(null)
+  const [oobHits, setOobHits] = useState<OobDetection[]>([])
   const [dnsName, setDnsName] = useState('contoso.local')
   const [netBios, setNetBios] = useState('CONTOSO')
   const [gpoId, setGpoId] = useState('{11111111-1111-1111-1111-111111111111}')
@@ -181,14 +210,18 @@ export default function App() {
   const refresh = useCallback(async () => {
     setError('')
     try {
-      const [m, d, g] = await Promise.all([
+      const [m, d, g, env, oob] = await Promise.all([
         api<Me>('/api/me', undefined, actor),
         api<Domain[]>('/api/domains', undefined, actor),
         api<ControlledGpo[]>('/api/gpos', undefined, actor),
+        api<AdEnvironment>('/api/ad/environment', undefined, actor),
+        api<OobDetection[]>('/api/oob', undefined, actor),
       ])
       setMe(m)
       setDomains(d)
       setGpos(g)
+      setAdEnv(env)
+      setOobHits(oob)
       if (selectedId) {
         const current = g.find((x) => x.id === selectedId) ?? null
         setSelected(current)
@@ -232,7 +265,8 @@ export default function App() {
           displayName: gpoName,
         }),
       }, actor)
-      setMessage(`Take Control: ${gpoName}`)
+      const mode = adEnv ? adModeLabel(adEnv.effectiveMode) : 'DryRun'
+      setMessage(`Take Control: ${gpoName} (${mode} AD path).`)
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -266,7 +300,7 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify({ checkoutAnyway: anyway }),
       }, actor)
-      setMessage(anyway ? 'Checkout anyway completed.' : 'Checked out — Temp-GPO bereit zum Edit.')
+      setMessage(anyway ? 'Checkout anyway completed (Temp GPO).' : 'Checked out — Temp-GPO bereit zum Edit.')
       setPendingEdits({})
       await refresh()
       await selectGpo(selectedId)
@@ -367,7 +401,8 @@ export default function App() {
     setError('')
     try {
       await api(`/api/gpos/${selectedId}/deploy`, { method: 'POST' }, actor)
-      setMessage('Deployed — Produktion aktualisiert (Stub ohne Domäne).')
+      const mode = adEnv ? adModeLabel(adEnv.effectiveMode) : 'DryRun'
+      setMessage(`Deployed — Produktion aktualisiert (${mode}).`)
       await refresh()
       await selectGpo(selectedId)
     } catch (e) {
@@ -378,8 +413,26 @@ export default function App() {
   async function runOobScan() {
     setError('')
     try {
-      const hits = await api<unknown[]>('/api/oob/scan', { method: 'POST' }, actor)
-      setMessage(`OOB scan: ${hits.length} detection(s).`)
+      const hits = await api<OobDetection[]>('/api/oob/scan', { method: 'POST' }, actor)
+      setOobHits(await api<OobDetection[]>('/api/oob', undefined, actor))
+      setMessage(`OOB scan: ${hits.length} new detection(s). Mail via SMTP config (no auto-reset).`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function simulateDrift() {
+    if (!selected) {
+      setError('Select a controlled GPO first.')
+      return
+    }
+    setError('')
+    try {
+      await api('/api/ad/simulate-drift', {
+        method: 'POST',
+        body: JSON.stringify({ productionGpoId: selected.productionGpoId }),
+      }, actor)
+      setMessage(`Simulated live drift for ${selected.displayName}. Run OOB scan.`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -411,9 +464,9 @@ export default function App() {
     <div className="app-shell">
       <header className="hero">
         <p className="brand">Group Policy Director</p>
-        <h1>Checkout → Check-in → Approve → Deploy</h1>
+        <h1>Take Control → Checkout → Approve → Deploy</h1>
         <p className="lede">
-          Slice 2 — SoD-Workflow, AD-Admin-Gruppen als Trustee, GPMC-vertrauter Settings-Tree.
+          Slice 3 — AD Temp-GPO path with domain detection, OOB baseline-vs-live + SMTP, wired into the Slice 2 workflow.
         </p>
         {me ? (
           <p className="identity">
@@ -444,6 +497,25 @@ export default function App() {
       )}
 
       <main className="layout">
+        <section className="panel">
+          <h2>AD / GPMC Environment</h2>
+          {adEnv ? (
+            <ul className="plain env-list">
+              <li>
+                Mode: <strong>{adModeLabel(adEnv.effectiveMode)}</strong>
+                {adEnv.forceDryRunConfigured ? ' (ForceDryRun)' : ''}
+              </li>
+              <li>Domain-joined: {adEnv.isDomainJoined ? 'yes' : 'no'}</li>
+              <li>Directory reachable: {adEnv.directoryReachable ? 'yes' : 'no'}</li>
+              <li>GPMC detected: {adEnv.gpmcAvailable ? 'yes' : 'no'}</li>
+              {adEnv.computerDnsDomain ? <li>DNS domain: {adEnv.computerDnsDomain}</li> : null}
+              <li className="muted">{adEnv.modeReason}</li>
+            </ul>
+          ) : (
+            <p className="muted">Loading environment…</p>
+          )}
+        </section>
+
         <section className="panel">
           <h2>Domain</h2>
           <div className="row">
@@ -484,7 +556,7 @@ export default function App() {
             </button>
           </div>
           <p className="muted">
-            Delegation-Seed: GPD-Editors / GPD-Approvers / GPD-Deployers auf OU=Workstations.
+            Live: LDAP ACL lockdown plan/bind. Offline: dry-run steps + baseline seed. Delegation-Seed: GPD-Editors / Approvers / Deployers.
           </p>
         </section>
 
@@ -500,6 +572,7 @@ export default function App() {
                 >
                   <strong>{g.displayName}</strong>
                   <span>{statusLabel(g.status)}</span>
+                  {g.tempGpoId ? <span className="muted temp-id">{g.tempGpoId}</span> : null}
                 </button>
               </li>
             ))}
@@ -539,7 +612,7 @@ export default function App() {
                 </button>
               </div>
               <p className="muted">
-                SoD: Editor ≠ Approver/Deployer. Pfad: Editor checkout/edit/check-in → Approver → Deployer.
+                SoD: Editor ≠ Approver/Deployer. Temp-GPO id stays until Deploy/Reject.
               </p>
             </>
           ) : null}
@@ -594,13 +667,34 @@ export default function App() {
         </section>
 
         <section className="panel">
-          <h2>OOB &amp; AGPM</h2>
+          <h2>OOB (Mail-first)</h2>
           <div className="actions">
+            <button type="button" className="secondary" onClick={() => void simulateDrift()}>
+              Simulate live drift
+            </button>
             <button type="button" onClick={() => void runOobScan()}>
-              OOB-Scan (Mail-Stub)
+              OOB-Scan + SMTP
             </button>
           </div>
-          <div className="row">
+          <p className="muted">
+            Compare controlled baseline vs live fingerprint. Configurable SMTP (`Smtp:*`). No auto-reset.
+          </p>
+          {oobHits.length ? (
+            <ul className="oob-list">
+              {oobHits.slice(0, 8).map((o) => (
+                <li key={o.id}>
+                  <strong>{new Date(o.detectedAt).toLocaleString('de-DE')}</strong>
+                  <span>{o.diffSummary}</span>
+                  <span className="muted">
+                    mail={o.emailSent ? 'sent/logged' : 'no'} · {o.resolution ?? 'PendingDecision'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">Keine OOB-Detections.</p>
+          )}
+          <div className="row" style={{ marginTop: '1rem' }}>
             <label>
               AGPM-Archivpfad
               <input value={agpmPath} onChange={(e) => setAgpmPath(e.target.value)} />
@@ -615,7 +709,7 @@ export default function App() {
 
       <footer>
         <p>
-          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} für SoD-Demo · keine Tier-Gates in Slice 2
+          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 3 AD/OOB · keine Tier-Gates
         </p>
       </footer>
     </div>

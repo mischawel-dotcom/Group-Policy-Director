@@ -163,9 +163,31 @@ button:hover {
 .plain,
 .gpo-list,
 .tree,
-.history {
+.history,
+.env-list,
+.oob-list {
   margin: 0;
   padding-left: 1.1rem;
+}
+
+.env-list,
+.oob-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.oob-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.65rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.gpo-list button .temp-id {
+  flex-basis: 100%;
+  font-size: 0.75rem;
 }
 
 .gpo-list {

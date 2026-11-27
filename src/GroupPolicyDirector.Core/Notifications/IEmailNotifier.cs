@@ -9,6 +9,6 @@ public sealed class EmailMessage
 
 public interface IEmailNotifier
 {
-    /// <summary>SMTP stub for Slice 1 — logs intent; real SMTP wired in later.</summary>
+    /// <summary>Sends via configurable SMTP when Smtp:Host is set; otherwise logs only.</summary>
     Task SendAsync(EmailMessage message, CancellationToken ct = default);
 }

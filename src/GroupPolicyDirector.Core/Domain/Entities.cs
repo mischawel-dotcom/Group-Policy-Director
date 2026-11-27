@@ -104,9 +104,9 @@ public sealed class OobDetection
     public Guid Id { get; init; } = Guid.NewGuid();
     public Guid ControlledGpoId { get; init; }
     public DateTimeOffset DetectedAt { get; init; } = DateTimeOffset.UtcNow;
-    public required string ProductionHash { get; init; }
-    public required string LastControlledHash { get; init; }
-    public string? DiffSummary { get; init; }
+    public required string ProductionHash { get; set; }
+    public required string LastControlledHash { get; set; }
+    public string? DiffSummary { get; set; }
     public bool EmailSent { get; set; }
     public string? Resolution { get; set; }
 }
