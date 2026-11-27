@@ -19,6 +19,7 @@ public sealed class MeController(IDelegationService delegation, IBreakGlassServi
         var roles = await delegation.ResolveEffectiveRolesAsync(identity, ct);
         var memberships = await delegation.ResolveMembershipPrincipalsAsync(identity, ct);
         var bg = await breakGlass.GetActiveSessionAsync(identity, ct);
+        var isAdmin = await delegation.IsProductAdministratorAsync(identity, ct);
         return Ok(new
         {
             identity,
@@ -29,7 +30,8 @@ public sealed class MeController(IDelegationService delegation, IBreakGlassServi
             effectiveRoles = roles,
             membershipPrincipals = memberships,
             isAuditor = await delegation.IsAuditorAsync(identity, ct),
-            isProductAdministrator = await delegation.IsProductAdministratorAsync(identity, ct),
+            isProductAdministrator = isAdmin,
+            canCreateGpo = await delegation.CanCreateGpoAsync(identity, ct),
             breakGlassEligible = await delegation.HasBreakGlassEligibilityAsync(identity, ct),
             breakGlassActive = bg is not null,
             activeBreakGlassSession = bg,

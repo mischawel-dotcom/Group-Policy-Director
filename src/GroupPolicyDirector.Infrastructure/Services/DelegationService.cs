@@ -385,6 +385,17 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         return roles.Any(r => r.Equals("Product:Auditor", StringComparison.OrdinalIgnoreCase));
     }
 
+    public async Task<bool> CanCreateGpoAsync(string windowsIdentity, CancellationToken ct = default)
+    {
+        if (await IsProductAdministratorAsync(windowsIdentity, ct))
+        {
+            return true;
+        }
+
+        var roles = await ResolveEffectiveRolesAsync(windowsIdentity, ct);
+        return roles.Any(r => r.Equals("Product:GpoCreator", StringComparison.OrdinalIgnoreCase));
+    }
+
     public async Task<bool> HasBreakGlassEligibilityAsync(string windowsIdentity, CancellationToken ct = default)
     {
         var roles = await ResolveEffectiveRolesAsync(windowsIdentity, ct);

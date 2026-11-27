@@ -496,6 +496,43 @@ footer {
   color: var(--warn);
 }
 
+.wizard-panel {
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--accent);
+  background: rgba(255, 255, 255, 0.92);
+  animation: wizard-in 280ms ease-out;
+}
+
+.wizard-steps {
+  margin: 0.75rem 0 1rem;
+  padding-left: 1.25rem;
+}
+
+.wizard-steps li {
+  margin-bottom: 0.65rem;
+}
+
+.wizard-steps li.done strong {
+  color: var(--ok);
+}
+
+.ok-tag {
+  color: var(--ok);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+@keyframes wizard-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @media (min-width: 900px) {
   .layout {
     grid-template-columns: 1fr 1fr;
@@ -507,7 +544,8 @@ footer {
   .breakglass-panel,
   .audit-panel,
   .agpm-panel,
-  .history-panel {
+  .history-panel,
+  .wizard-panel {
     grid-column: 1 / -1;
   }
 }

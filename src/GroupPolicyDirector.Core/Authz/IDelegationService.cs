@@ -30,6 +30,8 @@ public interface IDelegationService
     Task<bool> IsProductAdministratorAsync(string windowsIdentity, CancellationToken ct = default);
     /// <summary>True if actor holds the Auditor product role (read-only).</summary>
     Task<bool> IsAuditorAsync(string windowsIdentity, CancellationToken ct = default);
+    /// <summary>True if actor holds GpoCreator (or Product Administrator).</summary>
+    Task<bool> CanCreateGpoAsync(string windowsIdentity, CancellationToken ct = default);
     /// <summary>True if actor holds ProductRole.BreakGlass (eligibility — not necessarily an active session).</summary>
     Task<bool> HasBreakGlassEligibilityAsync(string windowsIdentity, CancellationToken ct = default);
     /// <summary>

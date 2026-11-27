@@ -250,6 +250,51 @@ public static class PolicyTreeFactory
         return null;
     }
 
+    /// <summary>Leaf paths whose State/Value differ between baseline and working trees.</summary>
+    public static IReadOnlyList<string> CollectChangedPaths(PolicyTreeNode baseline, PolicyTreeNode working)
+    {
+        var before = new Dictionary<string, (string? State, string? Value)>(StringComparer.OrdinalIgnoreCase);
+        var after = new Dictionary<string, (string? State, string? Value)>(StringComparer.OrdinalIgnoreCase);
+        CollectLeaves(baseline, before);
+        CollectLeaves(working, after);
+
+        var changed = new List<string>();
+        foreach (var (path, value) in after)
+        {
+            if (!before.TryGetValue(path, out var prior) ||
+                !string.Equals(prior.State, value.State, StringComparison.Ordinal) ||
+                !string.Equals(prior.Value, value.Value, StringComparison.Ordinal))
+            {
+                changed.Add(path);
+            }
+        }
+
+        foreach (var path in before.Keys)
+        {
+            if (!after.ContainsKey(path))
+            {
+                changed.Add(path);
+            }
+        }
+
+        return changed;
+    }
+
+    private static void CollectLeaves(
+        PolicyTreeNode node,
+        IDictionary<string, (string? State, string? Value)> bag)
+    {
+        if (node.Children.Count == 0 && (node.State is not null || node.Value is not null || node.IsEditable))
+        {
+            bag[node.Path] = (node.State, node.Value);
+        }
+
+        foreach (var child in node.Children)
+        {
+            CollectLeaves(child, bag);
+        }
+    }
+
     private static PolicyTreeNode Leaf(
         string path,
         string name,

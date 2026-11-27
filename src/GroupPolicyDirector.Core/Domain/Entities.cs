@@ -255,3 +255,64 @@ public sealed class SmtpSettingsUpdate
     public bool? UseDefaultCredentials { get; init; }
     public List<string>? AlertRecipients { get; init; }
 }
+
+/// <summary>General product settings: GPO naming regex and first-run wizard state (Slice 7).</summary>
+public sealed class GeneralSettingsView
+{
+    /// <summary>Optional .NET regex. Empty/null disables naming enforcement.</summary>
+    public string? GpoNamingRegex { get; init; }
+    public bool NamingEnforcementEnabled { get; init; }
+    public bool RequireCheckInComment { get; init; } = true;
+    public WelcomeWizardStatus WelcomeWizardStatus { get; init; } = WelcomeWizardStatus.Pending;
+    public DateTimeOffset? WelcomeWizardCompletedAt { get; init; }
+    public string? WelcomeWizardCompletedBy { get; init; }
+}
+
+public sealed class GeneralSettingsUpdate
+{
+    public string? GpoNamingRegex { get; init; }
+    /// <summary>When true, clear the naming regex (disable enforcement).</summary>
+    public bool? ClearGpoNamingRegex { get; init; }
+}
+
+public enum WelcomeWizardStatus
+{
+    Pending = 0,
+    Completed = 1,
+    Skipped = 2
+}
+
+/// <summary>
+/// Policy-area guard (Referenz-Tools Restricted Policies). Area-level only — not setting-level.
+/// Allowed trustees ⇒ implicit deny for all other editors; check-in blocked on violation.
+/// </summary>
+public sealed class RestrictedPolicyArea
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    /// <summary>Policy tree path prefix, e.g. /Computer/Policies/Windows Settings/Security Settings</summary>
+    public required string AreaPath { get; init; }
+    public string? Label { get; init; }
+    /// <summary>AD groups/users allowed to edit this area. Empty = deny everyone except Product Admin / Break Glass.</summary>
+    public List<string> AllowedTrustees { get; set; } = [];
+    public required string CreatedBy { get; init; }
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class WelcomeWizardView
+{
+    public WelcomeWizardStatus Status { get; init; }
+    public bool IsDismissed => Status is WelcomeWizardStatus.Completed or WelcomeWizardStatus.Skipped;
+    public bool CanManage { get; init; }
+    public IReadOnlyList<WelcomeWizardStep> Steps { get; init; } = [];
+    public DateTimeOffset? CompletedAt { get; init; }
+    public string? CompletedBy { get; init; }
+}
+
+public sealed class WelcomeWizardStep
+{
+    public required string Id { get; init; }
+    public required string Title { get; init; }
+    public required string Description { get; init; }
+    public bool Done { get; init; }
+    public bool Optional { get; init; }
+}

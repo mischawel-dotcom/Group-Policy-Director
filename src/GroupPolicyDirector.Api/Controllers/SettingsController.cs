@@ -13,6 +13,7 @@ namespace GroupPolicyDirector.Api.Controllers;
 [Authorize]
 public sealed class SettingsController(
     ISmtpSettingsService smtp,
+    IGeneralSettingsService general,
     IEmailNotifier email,
     IAuditService audit) : ControllerBase
 {
@@ -42,6 +43,22 @@ public sealed class SettingsController(
     {
         var view = smtp.Update(update, Actor);
         return Ok(view);
+    }
+
+    [HttpGet("general")]
+    public IActionResult GetGeneral() => Ok(general.GetView());
+
+    [HttpPut("general")]
+    public IActionResult PutGeneral([FromBody] GeneralSettingsUpdate update)
+    {
+        try
+        {
+            return Ok(general.Update(update, Actor));
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
     }
 
     public sealed record SmtpTestRequest(string? To);

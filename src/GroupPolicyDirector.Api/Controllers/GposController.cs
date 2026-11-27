@@ -54,6 +54,56 @@ public sealed class GposController(IGpoWorkflowService workflow, IDiffService di
         }
     }
 
+    public sealed record CreateGpoRequest(
+        Guid DomainId,
+        string DisplayName,
+        Guid? CopyFromControlledGpoId = null,
+        bool CheckoutAfterCreate = false);
+
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] CreateGpoRequest request, CancellationToken ct)
+    {
+        try
+        {
+            var gpo = await workflow.CreateAsync(
+                request.DomainId,
+                request.DisplayName,
+                Actor,
+                request.CopyFromControlledGpoId,
+                request.CheckoutAfterCreate,
+                ct);
+            return Ok(gpo);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or KeyNotFoundException)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    public sealed record RenameGpoRequest(string DisplayName);
+
+    [HttpPost("{id:guid}/rename")]
+    public async Task<IActionResult> Rename(Guid id, [FromBody] RenameGpoRequest request, CancellationToken ct)
+    {
+        try
+        {
+            var gpo = await workflow.RenameAsync(id, request.DisplayName, Actor, ct);
+            return Ok(gpo);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or KeyNotFoundException)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     public sealed record CheckoutRequest(bool CheckoutAnyway = false);
 
     [HttpPost("{id:guid}/checkout")]
@@ -121,7 +171,11 @@ public sealed class GposController(IGpoWorkflowService workflow, IDiffService di
             var version = await workflow.CheckInAsync(id, request.Comment, Actor, ct);
             return Ok(version);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or KeyNotFoundException or UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or KeyNotFoundException)
         {
             return BadRequest(new { error = ex.Message });
         }

@@ -32,10 +32,46 @@ type Me = {
   membershipPrincipals?: string[]
   isAuditor?: boolean
   isProductAdministrator?: boolean
+  canCreateGpo?: boolean
   breakGlassEligible?: boolean
   breakGlassActive?: boolean
   activeBreakGlassSession?: BreakGlassSession | null
   demoActors?: string[]
+}
+
+type GeneralSettings = {
+  gpoNamingRegex?: string | null
+  namingEnforcementEnabled: boolean
+  requireCheckInComment: boolean
+  welcomeWizardStatus: number
+  welcomeWizardCompletedAt?: string
+  welcomeWizardCompletedBy?: string
+}
+
+type WelcomeWizardStep = {
+  id: string
+  title: string
+  description: string
+  done: boolean
+  optional: boolean
+}
+
+type WelcomeWizard = {
+  status: number
+  isDismissed: boolean
+  canManage: boolean
+  steps: WelcomeWizardStep[]
+  completedAt?: string
+  completedBy?: string
+}
+
+type RestrictedPolicyArea = {
+  id: string
+  areaPath: string
+  label?: string
+  allowedTrustees: string[]
+  createdBy: string
+  createdAt: string
 }
 
 type Domain = {
@@ -451,6 +487,19 @@ export default function App() {
   const [message, setMessage] = useState<string>('')
   const [error, setError] = useState<string>('')
   const [pendingEdits, setPendingEdits] = useState<Record<string, { state?: string; value?: string }>>({})
+  const [general, setGeneral] = useState<GeneralSettings | null>(null)
+  const [namingRegex, setNamingRegex] = useState('')
+  const [createName, setCreateName] = useState('Policy_Workstations-Baseline-01')
+  const [createCopyFrom, setCreateCopyFrom] = useState('')
+  const [createCheckout, setCreateCheckout] = useState(false)
+  const [renameName, setRenameName] = useState('')
+  const [restricted, setRestricted] = useState<RestrictedPolicyArea[]>([])
+  const [areaHints, setAreaHints] = useState<string[]>([])
+  const [rpAreaPath, setRpAreaPath] = useState('/Computer/Policies/Windows Settings/Security Settings')
+  const [rpTrustees, setRpTrustees] = useState('CONTOSO\\GPD-Editors')
+  const [rpLabel, setRpLabel] = useState('Security Settings')
+  const [wizard, setWizard] = useState<WelcomeWizard | null>(null)
+  const [showWizard, setShowWizard] = useState(false)
 
   const refreshDelegation = useCallback(async () => {
     const [pr, oroles, sug, hints, sessions] = await Promise.all([
@@ -486,7 +535,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     setError('')
     try {
-      const [m, d, g, env, oob, c, smtpView] = await Promise.all([
+      const [m, d, g, env, oob, c, smtpView, gen, rp, hints, wiz] = await Promise.all([
         api<Me>('/api/me', undefined, actor),
         api<Domain[]>('/api/domains', undefined, actor),
         api<ControlledGpo[]>('/api/gpos', undefined, actor),
@@ -494,6 +543,10 @@ export default function App() {
         api<OobDetection[]>('/api/oob', undefined, actor),
         api<ControlledContainer[]>('/api/containers', undefined, actor),
         api<SmtpSettings>('/api/settings/smtp', undefined, actor),
+        api<GeneralSettings>('/api/settings/general', undefined, actor),
+        api<RestrictedPolicyArea[]>('/api/restricted-policies', undefined, actor),
+        api<string[]>('/api/restricted-policies/area-hints', undefined, actor),
+        api<WelcomeWizard>('/api/wizard', undefined, actor),
       ])
       setMe(m)
       setDomains(d)
@@ -508,6 +561,12 @@ export default function App() {
       setSmtpUseSsl(smtpView.useSsl)
       setSmtpUser(smtpView.user)
       setSmtpRecipients(smtpView.alertRecipients.join(', '))
+      setGeneral(gen)
+      setNamingRegex(gen.gpoNamingRegex ?? '')
+      setRestricted(rp)
+      setAreaHints(hints)
+      setWizard(wiz)
+      setShowWizard(Boolean(wiz.canManage && !wiz.isDismissed))
       if (selectedId) {
         const current = g.find((x) => x.id === selectedId) ?? null
         setSelected(current)
@@ -572,6 +631,127 @@ export default function App() {
     }
   }
 
+  async function createGpo() {
+    setError('')
+    const domainId = domains[0]?.id
+    if (!domainId) {
+      setError('Register a domain first.')
+      return
+    }
+    try {
+      const gpo = await api<ControlledGpo>('/api/gpos', {
+        method: 'POST',
+        body: JSON.stringify({
+          domainId,
+          displayName: createName,
+          copyFromControlledGpoId: createCopyFrom || null,
+          checkoutAfterCreate: createCheckout,
+        }),
+      }, actor)
+      setMessage(`GPO erstellt: ${gpo.displayName}${createCheckout ? ' (checked out)' : ''}.`)
+      await refresh()
+      await selectGpo(gpo.id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function renameGpo() {
+    setError('')
+    if (!selectedId) {
+      setError('Select a GPO first.')
+      return
+    }
+    try {
+      const gpo = await api<ControlledGpo>(`/api/gpos/${selectedId}/rename`, {
+        method: 'POST',
+        body: JSON.stringify({ displayName: renameName }),
+      }, actor)
+      setMessage(`Umbenannt: ${gpo.displayName}`)
+      await refresh()
+      await selectGpo(gpo.id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function saveNaming() {
+    setError('')
+    try {
+      const view = await api<GeneralSettings>('/api/settings/general', {
+        method: 'PUT',
+        body: JSON.stringify(
+          namingRegex.trim()
+            ? { gpoNamingRegex: namingRegex.trim() }
+            : { clearGpoNamingRegex: true },
+        ),
+      }, actor)
+      setGeneral(view)
+      setNamingRegex(view.gpoNamingRegex ?? '')
+      setMessage(
+        view.namingEnforcementEnabled
+          ? `Naming regex aktiv: ${view.gpoNamingRegex}`
+          : 'Naming-Enforcement deaktiviert.',
+      )
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function upsertRestricted() {
+    setError('')
+    try {
+      await api('/api/restricted-policies', {
+        method: 'POST',
+        body: JSON.stringify({
+          areaPath: rpAreaPath,
+          label: rpLabel || null,
+          allowedTrustees: rpTrustees.split(/[,;\s]+/).filter(Boolean),
+        }),
+      }, actor)
+      setMessage(`Restricted Policy gesetzt: ${rpAreaPath}`)
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function deleteRestricted(id: string) {
+    setError('')
+    try {
+      await api(`/api/restricted-policies/${id}`, { method: 'DELETE' }, actor)
+      setMessage('Restricted Policy entfernt.')
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function completeWizard() {
+    setError('')
+    try {
+      const wiz = await api<WelcomeWizard>('/api/wizard/complete', { method: 'POST' }, actor)
+      setWizard(wiz)
+      setShowWizard(false)
+      setMessage('Welcome Wizard abgeschlossen.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function skipWizard() {
+    setError('')
+    try {
+      const wiz = await api<WelcomeWizard>('/api/wizard/skip', { method: 'POST' }, actor)
+      setWizard(wiz)
+      setShowWizard(false)
+      setMessage('Welcome Wizard übersprungen.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   async function selectGpo(id: string) {
     setSelectedId(id)
     setPendingEdits({})
@@ -586,7 +766,9 @@ export default function App() {
       setTree(t)
       setHistory(h)
       setGpos(list)
-      setSelected(list.find((g) => g.id === id) ?? null)
+      const current = list.find((g) => g.id === id) ?? null
+      setSelected(current)
+      if (current) setRenameName(current.displayName)
       if (h.length >= 2) {
         setDiffFrom(h[h.length - 1]?.versionNumber ?? 1)
         setDiffTo(h[0]?.versionNumber ?? 1)
@@ -1180,13 +1362,15 @@ export default function App() {
         <p className="brand">Group Policy Director</p>
         <h1>Take Control → Checkout → Approve → Deploy</h1>
         <p className="lede">
-          Slice 6 — Break Glass (zeitgebunden), Auditor (read-only), Audit-Log Filter/CSV. Branding bleibt Referenz-Tools. Kein Intune.
+          Slice 7 — GPO Naming-Regex, Restricted Policies (Area-Deny), Welcome Wizard. Branding bleibt Referenz-Tools. Kein Intune.
         </p>
         {me ? (
           <p className="identity">
             {me.identity} · {me.authMode}
             {me.isAuditor ? ' · Auditor' : ''}
+            {me.canCreateGpo ? ' · GPO Creator' : ''}
             {me.breakGlassActive ? ' · Break Glass ACTIVE' : me.breakGlassEligible ? ' · Break Glass eligible' : ''}
+            {general?.namingEnforcementEnabled ? ' · Naming ON' : ''}
           </p>
         ) : null}
         <div className="actor-switch">
@@ -1211,6 +1395,36 @@ export default function App() {
           {error || message}
         </div>
       )}
+
+      {showWizard && wizard ? (
+        <section className="panel wizard-panel" aria-label="Welcome Wizard">
+          <h2>Welcome Wizard (Product Admin)</h2>
+          <p className="muted">
+            Erster Start — überspringbar. Intune-Schritt sind deferred. Schritte helfen bei Domain/GPO, Delegation und Settings.
+          </p>
+          <ol className="wizard-steps">
+            {wizard.steps.map((s) => (
+              <li key={s.id} className={s.done ? 'done' : undefined}>
+                <strong>{s.title}</strong>
+                {s.optional ? <em className="muted"> (optional)</em> : null}
+                {s.done ? <span className="ok-tag"> erledigt</span> : <span className="muted"> offen</span>}
+                <p className="muted">{s.description}</p>
+              </li>
+            ))}
+          </ol>
+          <div className="actions">
+            <button type="button" onClick={() => void completeWizard()}>
+              Abschließen
+            </button>
+            <button type="button" className="secondary" onClick={() => void skipWizard()}>
+              Überspringen
+            </button>
+            <button type="button" className="secondary" onClick={() => setShowWizard(false)}>
+              Später
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <main className="layout">
         <section className="panel">
@@ -1274,6 +1488,131 @@ export default function App() {
           <p className="muted">
             Live: LDAP ACL lockdown plan/bind. Offline: dry-run steps + baseline seed. Delegation-Seed: GPD-Editors / Approvers / Deployers.
           </p>
+        </section>
+
+        <section className="panel">
+          <h2>Create / Rename GPO</h2>
+          <p className="muted">
+            Create erfordert GpoCreator oder Product Admin. Rename erfordert Editor. Naming-Regex greift bei Create und Rename, wenn aktiv.
+          </p>
+          <div className="row">
+            <label>
+              Neuer Name
+              <input value={createName} onChange={(e) => setCreateName(e.target.value)} />
+            </label>
+            <label>
+              Copy from (optional Id)
+              <select value={createCopyFrom} onChange={(e) => setCreateCopyFrom(e.target.value)}>
+                <option value="">— leer —</option>
+                {gpos.map((g) => (
+                  <option key={g.id} value={g.id}>{g.displayName}</option>
+                ))}
+              </select>
+            </label>
+            <label className="checkbox-label">
+              Checkout danach
+              <input
+                type="checkbox"
+                checked={createCheckout}
+                onChange={(e) => setCreateCheckout(e.target.checked)}
+              />
+            </label>
+            <button type="button" onClick={() => void createGpo()} disabled={!me?.canCreateGpo}>
+              Create GPO
+            </button>
+          </div>
+          <div className="row">
+            <label>
+              Rename
+              <input
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                disabled={!selectedId}
+                placeholder="Anzeigename"
+              />
+            </label>
+            <button type="button" onClick={() => void renameGpo()} disabled={!selectedId}>
+              Rename
+            </button>
+          </div>
+        </section>
+
+        <section className="panel">
+          <h2>General Settings — GPO Naming</h2>
+          <div className="row">
+            <label>
+              Naming Regex
+              <input
+                value={namingRegex}
+                onChange={(e) => setNamingRegex(e.target.value)}
+                placeholder="z.B. ^Policy_\w+-\w+-\d+$"
+              />
+            </label>
+            <button type="button" onClick={() => void saveNaming()}>
+              Speichern
+            </button>
+          </div>
+          <p className="muted">
+            {general?.namingEnforcementEnabled
+              ? `Aktiv: ${general.gpoNamingRegex}`
+              : 'Leer = keine Enforcement. Beispiele wie Referenz-Tools: Policy_\\w*-\\w*-\\d*'}
+          </p>
+        </section>
+
+        <section className="panel">
+          <h2>Restricted Policies (Area-level)</h2>
+          <p className="muted">
+            Product Admin setzt erlaubte Trustee für eine Policy-Area. Andere Editoren: Implicit Deny — Update und Check-in blockiert. Kein Setting-Level.
+          </p>
+          <div className="row">
+            <label>
+              Area Path
+              <input
+                list="area-hints"
+                value={rpAreaPath}
+                onChange={(e) => setRpAreaPath(e.target.value)}
+              />
+              <datalist id="area-hints">
+                {areaHints.map((a) => (
+                  <option key={a} value={a} />
+                ))}
+              </datalist>
+            </label>
+            <label>
+              Label
+              <input value={rpLabel} onChange={(e) => setRpLabel(e.target.value)} />
+            </label>
+            <label>
+              Allowed Trustees
+              <input
+                list="trustee-hints"
+                value={rpTrustees}
+                onChange={(e) => setRpTrustees(e.target.value)}
+              />
+            </label>
+            <button type="button" onClick={() => void upsertRestricted()}>
+              Speichern
+            </button>
+          </div>
+          <ul className="delegation-list">
+            {restricted.length === 0 ? (
+              <li className="muted">Keine Restricted Areas konfiguriert.</li>
+            ) : (
+              restricted.map((r) => (
+                <li key={r.id}>
+                  <span>
+                    <strong>{r.label ?? r.areaPath}</strong>
+                    <span className="muted"> · {r.areaPath}</span>
+                    <br />
+                    Allowed: {r.allowedTrustees.length ? r.allowedTrustees.join(', ') : '(none — deny all editors)'}
+                  </span>
+                  <button type="button" className="secondary" onClick={() => void deleteRestricted(r.id)}>
+                    Remove
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
         </section>
 
         <section className="panel">
@@ -2110,7 +2449,7 @@ export default function App() {
 
       <footer>
         <p>
-          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 5 Container-Links / Diff / SMTP · Referenz-Tools branding · keine Tier-Gates · kein Auto-Reset
+          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 7 Naming / Restricted / Wizard · Referenz-Tools branding · keine Tier-Gates · kein Intune · kein Auto-Reset
         </p>
       </footer>
     </div>

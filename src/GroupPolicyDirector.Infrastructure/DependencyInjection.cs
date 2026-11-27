@@ -27,6 +27,8 @@ public static class DependencyInjection
         services.AddSingleton<IOobDetectionService, OobDetectionService>();
         services.AddSingleton<IAgpmImportService, AgpmImportDryRunService>();
         services.AddSingleton<ISmtpSettingsService, SmtpSettingsService>();
+        services.AddSingleton<IGeneralSettingsService, GeneralSettingsService>();
+        services.AddSingleton<IRestrictedPolicyService, RestrictedPolicyService>();
         services.AddSingleton<IEmailNotifier, SmtpEmailNotifier>();
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
