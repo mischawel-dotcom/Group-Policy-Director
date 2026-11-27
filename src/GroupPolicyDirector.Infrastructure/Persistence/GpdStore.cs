@@ -18,10 +18,17 @@ public sealed class GpdStore
     public List<AdGroupMembershipStub> GroupMemberships { get; } = [];
     public List<AuditEvent> Audit { get; } = [];
     public List<OobDetection> OobDetections { get; } = [];
+    public List<RestrictedPolicyArea> RestrictedPolicies { get; } = [];
     /// <summary>Working / production settings trees keyed by ControlledGpo Id.</summary>
     public Dictionary<Guid, PolicyTreeNode> SettingsTrees { get; } = new();
     /// <summary>Working link sets keyed by ControlledContainer Id.</summary>
     public Dictionary<Guid, ContainerLinksState> ContainerLinks { get; } = new();
+
+    /// <summary>General settings (naming regex + welcome wizard) — mutated under Sync.</summary>
+    public string? GpoNamingRegex { get; set; }
+    public WelcomeWizardStatus WelcomeWizardStatus { get; set; } = WelcomeWizardStatus.Pending;
+    public DateTimeOffset? WelcomeWizardCompletedAt { get; set; }
+    public string? WelcomeWizardCompletedBy { get; set; }
 
     public readonly object Sync = new();
 }

@@ -1,7 +1,7 @@
 # Group Policy Director
 
 Moderner AGPM-Nachfolger mit Change-Control für Group Policy (on-prem first).  
-**Slice 6:** Break Glass (zeitgebunden, auditierter SoD-Bypass), Auditor (read-only), Audit-Log Filter + CSV. Branding: **Referenz-Tools**. Kein Intune.
+**Slice 7:** GPO Naming-Regex, Restricted Policies (Area-Deny), Welcome Wizard (skippable). Branding: **Referenz-Tools**. Kein Intune.
 
 ## Struktur
 
@@ -13,7 +13,7 @@ src/GroupPolicyDirector.Infrastructure/  AD adapters + Services
 ui/                                      React + TypeScript (Vite)
 database/schema/                         SQL Server Schema-Stubs
 fixtures/agpm-history-sample.zip         AGPM-style dry-run fixture
-docs/slice-1.md … docs/slice-6.md        Slice-Notizen
+docs/slice-1.md … docs/slice-7.md        Slice-Notizen
 ```
 
 ## Voraussetzungen
@@ -40,15 +40,14 @@ Optional Worker:
 dotnet run --project src/GroupPolicyDirector.Worker
 ```
 
-## Workflow (Slice 6)
+## Workflow (Slice 7)
 
-1. Domain registrieren → **Take Control** GPO und/oder **Container**
-2. **Delegation:** Product Admin vergibt OU/GPO/Container-Rollen an AD-Gruppen
-3. **Editor → Approver → Deployer** wie Slice 5 (SoD)
-4. **Break Glass:** Product Admin aktiviert Session für Break-Glass-Trustee (Reason, Dauer) → Notfall-Bypass → Revoke/Expiry
-5. **Auditor:** Demo-Akteur `CONTOSO\gpd-auditor` — read-only Objekte/Diffs/Audit
-6. **Audit Log:** Filter Object/Actor/Action/Zeit → Export CSV
-7. History/Diff, SMTP/OOB, AGPM Dry-Run unverändert (kein Auto-Reset, kein Intune)
+1. Product Admin: optional **Welcome Wizard** (Complete / Skip)
+2. Domain registrieren → Take Control und/oder **Create GPO** (Naming-Regex wenn aktiv)
+3. **Restricted Policies:** Area-Pfad + Allowed Trustees → andere Editoren denied
+4. Editor Checkout → Settings (restricted areas blockiert) → Check-in → Approve → Deploy
+5. **Rename** unterliegt derselben Naming-Regel
+6. Break Glass / Auditor / Audit / Diff / SMTP unverändert (kein Auto-Reset, kein Intune)
 
 Demo-Akteur: Header `X-Gpd-Actor` (`gpd-admin`, `gpd-editor`, `gpd-approver`, `gpd-deployer`, `gpd-breakglass`, `gpd-auditor`).
 
@@ -56,12 +55,13 @@ Demo-Akteur: Header `X-Gpd-Actor` (`gpd-admin`, `gpd-editor`, `gpd-approver`, `g
 
 | Methode | Pfad | Zweck |
 |---------|------|--------|
-| GET | `/api/health` | Health + AD mode (slice=6) |
-| GET/POST | `/api/break-glass`, `/activate`, `/{id}/revoke` | Break Glass sessions |
-| GET | `/api/audit` | Audit filter (object/actor/action/from/to) |
-| GET | `/api/audit/export` | Audit CSV export |
-| GET | `/api/me` | Identity + roles + breakGlassActive / isAuditor |
-| … | Slice 5 endpoints | Containers, Diff, SMTP, Delegation, AGPM |
+| GET | `/api/health` | Health + AD mode (slice=7) |
+| GET/PUT | `/api/settings/general` | Naming regex + wizard status |
+| POST | `/api/gpos` | Create GPO (naming enforced) |
+| POST | `/api/gpos/{id}/rename` | Rename (naming enforced) |
+| GET/POST/DELETE | `/api/restricted-policies` | Area-level Restricted Policies |
+| GET/POST | `/api/wizard`, `/complete`, `/skip` | Welcome Wizard |
+| … | Slice 6 endpoints | Break Glass, Audit, Delegation, Containers |
 
 ## Auth / AD / SMTP
 
@@ -69,9 +69,9 @@ Demo-Akteur: Header `X-Gpd-Actor` (`gpd-admin`, `gpd-editor`, `gpd-approver`, `g
 - **AD:** `Gpd:Ad:ForceDryRun` erzwingt DryRun; sonst Auto-Detect
 - **SMTP:** Runtime-Overlay über `Smtp:*`; Host leer = log-only; **kein Auto-Reset**
 
-## Nicht in Slice 6
+## Nicht in Slice 7
 
-Intune, Auto-OOB-Reset, Tier-/ESAE-Gates, Entra SSO, geplantes Deploy, SQL-Persistenz, vollständiger GPMC-COM CopyGPO.
+Intune, Auto-OOB-Reset, Tier-/ESAE-Gates, Entra SSO, geplantes Deploy, SQL-Persistenz, Setting-Level Restricted Policies.
 
 ## Lizenz / Marke
 

@@ -20,6 +20,8 @@ public sealed class GpoWorkflowService(
     IOobDetectionService oob,
     IDelegationService delegation,
     IBreakGlassService breakGlass,
+    IRestrictedPolicyService restrictedPolicies,
+    IGeneralSettingsService generalSettings,
     IGpoDirectoryService directory) : IGpoWorkflowService
 {
     public Task<IReadOnlyList<ControlledGpo>> ListControlledAsync(CancellationToken ct = default)
@@ -120,6 +122,214 @@ public sealed class GpoWorkflowService(
         }, ct);
 
         return gpo;
+    }
+
+    public async Task<ControlledGpo> CreateAsync(
+        Guid domainId,
+        string displayName,
+        string actor,
+        Guid? copyFromControlledGpoId = null,
+        bool checkoutAfterCreate = false,
+        CancellationToken ct = default)
+    {
+        await delegation.EnsureDemoTrusteesSeededAsync(ct);
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
+
+        if (!await delegation.CanCreateGpoAsync(actor, ct))
+        {
+            throw new UnauthorizedAccessException("GpoCreator or Product Administrator role required to create GPOs.");
+        }
+
+        generalSettings.EnsureNameAllowed(displayName);
+
+        DomainRegistration domain;
+        lock (store.Sync)
+        {
+            domain = store.Domains.FirstOrDefault(d => d.Id == domainId)
+                     ?? throw new InvalidOperationException("Domain is not registered.");
+        }
+
+        PolicyTreeNode tree;
+        if (copyFromControlledGpoId is Guid sourceId)
+        {
+            lock (store.Sync)
+            {
+                var source = store.Gpos.FirstOrDefault(g => g.Id == sourceId)
+                             ?? throw new KeyNotFoundException("Source GPO for copy not found.");
+                if (!store.SettingsTrees.TryGetValue(source.Id, out var sourceTree))
+                {
+                    sourceTree = PolicyTreeFactory.CreateBaseline(source.DisplayName);
+                }
+
+                tree = PolicyTreeFactory.Clone(sourceTree);
+                tree = new PolicyTreeNode
+                {
+                    Path = "/",
+                    Name = displayName.Trim(),
+                    Children = tree.Children
+                };
+            }
+        }
+        else
+        {
+            tree = PolicyTreeFactory.CreateBaseline(displayName.Trim());
+        }
+
+        var productionId = $"{{{Guid.NewGuid():D}}}";
+        var json = JsonSerializer.Serialize(tree);
+        var hash = ComputeHash(json);
+
+        var adResult = await directory.TakeControlAsync(new TakeControlAdRequest
+        {
+            DomainDnsName = domain.DnsName,
+            ProductionGpoId = productionId,
+            DisplayName = displayName.Trim(),
+            Actor = actor
+        }, ct);
+
+        if (adResult.Mode == AdOperationMode.DryRun)
+        {
+            await directory.SetControlledBaselineAsync(productionId, hash, displayName.Trim(), ct);
+        }
+
+        var gpo = new ControlledGpo
+        {
+            DomainId = domainId,
+            ProductionGpoId = productionId,
+            DisplayName = displayName.Trim(),
+            SettingsHash = hash,
+            TakenControlBy = actor,
+            Status = ControlledGpoStatus.UnderControl
+        };
+
+        lock (store.Sync)
+        {
+            store.Gpos.Add(gpo);
+            store.SettingsTrees[gpo.Id] = tree;
+            store.Versions.Add(new GpoVersion
+            {
+                ControlledGpoId = gpo.Id,
+                VersionNumber = 1,
+                Comment = copyFromControlledGpoId is null
+                    ? "Created empty GPO (under control)"
+                    : $"Created as copy of {copyFromControlledGpoId}",
+                CreatedBy = actor,
+                SettingsHash = hash,
+                SettingsSnapshotJson = json,
+                Provenance = "GPD",
+                WorkflowState = "Deployed"
+            });
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = actor,
+            Action = "Gpo.Create",
+            ObjectKey = productionId,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                gpo.DisplayName,
+                copyFrom = copyFromControlledGpoId,
+                namingEnforced = generalSettings.GetView().NamingEnforcementEnabled,
+                adMode = adResult.Mode.ToString()
+            })
+        }, ct);
+
+        if (checkoutAfterCreate)
+        {
+            return await CheckoutAsync(gpo.Id, actor, checkoutAnyway: false, ct);
+        }
+
+        return gpo;
+    }
+
+    public async Task<ControlledGpo> RenameAsync(
+        Guid controlledGpoId,
+        string newDisplayName,
+        string actor,
+        CancellationToken ct = default)
+    {
+        await delegation.EnsureDemoTrusteesSeededAsync(ct);
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
+        generalSettings.EnsureNameAllowed(newDisplayName);
+
+        ControlledGpo gpo;
+        string previous;
+        lock (store.Sync)
+        {
+            gpo = store.Gpos.FirstOrDefault(g => g.Id == controlledGpoId)
+                  ?? throw new KeyNotFoundException("Controlled GPO not found.");
+            previous = gpo.DisplayName;
+        }
+
+        if (!await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Editor, ct) &&
+            !await delegation.IsProductAdministratorAsync(actor, ct))
+        {
+            throw new UnauthorizedAccessException("Editor (or Product Admin / active Break Glass) role required to rename.");
+        }
+
+        if (gpo.Status is ControlledGpoStatus.WaitingApproval or ControlledGpoStatus.Approved)
+        {
+            throw new InvalidOperationException($"Cannot rename while status is {gpo.Status}.");
+        }
+
+        // ControlledGpo.DisplayName is init-only — replace entry in store.
+        ControlledGpo renamed;
+        lock (store.Sync)
+        {
+            store.Gpos.Remove(gpo);
+            renamed = new ControlledGpo
+            {
+                Id = gpo.Id,
+                DomainId = gpo.DomainId,
+                ProductionGpoId = gpo.ProductionGpoId,
+                DisplayName = newDisplayName.Trim(),
+                TempGpoId = gpo.TempGpoId,
+                Status = gpo.Status,
+                CheckedOutBy = gpo.CheckedOutBy,
+                CheckedOutAt = gpo.CheckedOutAt,
+                SettingsHash = gpo.SettingsHash,
+                TakenControlAt = gpo.TakenControlAt,
+                TakenControlBy = gpo.TakenControlBy,
+                PendingVersionId = gpo.PendingVersionId,
+                ApprovedBy = gpo.ApprovedBy,
+                ApprovedAt = gpo.ApprovedAt
+            };
+            store.Gpos.Add(renamed);
+
+            if (store.SettingsTrees.TryGetValue(renamed.Id, out var tree))
+            {
+                store.SettingsTrees[renamed.Id] = new PolicyTreeNode
+                {
+                    Path = "/",
+                    Name = renamed.DisplayName,
+                    Children = tree.Children,
+                    Value = tree.Value,
+                    State = tree.State,
+                    IsEditable = tree.IsEditable,
+                    IsStub = tree.IsStub,
+                    SettingType = tree.SettingType
+                };
+            }
+        }
+
+        await AuditBreakGlassUseAsync(actor, "Gpo.Rename", renamed.ProductionGpoId, ct);
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = actor,
+            Action = "Gpo.Rename",
+            ObjectKey = renamed.ProductionGpoId,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                from = previous,
+                to = renamed.DisplayName,
+                namingEnforced = generalSettings.GetView().NamingEnforcementEnabled
+            })
+        }, ct);
+
+        return renamed;
     }
 
     public async Task<ControlledGpo> CheckoutAsync(
@@ -243,6 +453,8 @@ public sealed class GpoWorkflowService(
         CancellationToken ct = default)
     {
         await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
+        await restrictedPolicies.EnsurePathsEditableAsync(actor, updates.Select(u => u.Path), ct);
+
         ControlledGpo gpo;
         lock (store.Sync)
         {
@@ -292,6 +504,40 @@ public sealed class GpoWorkflowService(
         {
             throw new ArgumentException("Check-in comment is required.", nameof(comment));
         }
+
+        PolicyTreeNode? baseline = null;
+        PolicyTreeNode working;
+        ControlledGpo gpoProbe;
+        lock (store.Sync)
+        {
+            gpoProbe = store.Gpos.FirstOrDefault(g => g.Id == controlledGpoId)
+                       ?? throw new KeyNotFoundException("Controlled GPO not found.");
+
+            if (gpoProbe.Status != ControlledGpoStatus.CheckedOut ||
+                !string.Equals(gpoProbe.CheckedOutBy, actor, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("GPO is not checked out by the current user.");
+            }
+
+            if (!store.SettingsTrees.TryGetValue(gpoProbe.Id, out working!))
+            {
+                working = PolicyTreeFactory.CreateBaseline(gpoProbe.DisplayName);
+                store.SettingsTrees[gpoProbe.Id] = working;
+            }
+
+            var lastDeployed = store.Versions
+                .Where(v => v.ControlledGpoId == controlledGpoId &&
+                            string.Equals(v.WorkflowState, "Deployed", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(v => v.VersionNumber)
+                .FirstOrDefault();
+            if (lastDeployed?.SettingsSnapshotJson is { Length: > 0 } snap)
+            {
+                baseline = JsonSerializer.Deserialize<PolicyTreeNode>(snap);
+            }
+        }
+
+        // Area-level Restricted Policies: block check-in when unauthorized drift exists.
+        await restrictedPolicies.EnsureCheckInAllowedAsync(actor, baseline, working, ct);
 
         GpoVersion version;
         ControlledGpo gpo;
