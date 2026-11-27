@@ -23,5 +23,7 @@ public interface IGpoWorkflowService
     Task<ControlledGpo> ApproveAsync(Guid controlledGpoId, string actor, string? comment = null, CancellationToken ct = default);
     Task<ControlledGpo> RejectAsync(Guid controlledGpoId, string actor, string comment, CancellationToken ct = default);
     Task<ControlledGpo> DeployAsync(Guid controlledGpoId, string actor, CancellationToken ct = default);
+    Task<ControlledGpo> DeployAsync(Guid controlledGpoId, string actor, DeployOptions options, CancellationToken ct = default);
+    Task EnsureCanDeployAsync(Guid controlledGpoId, string actor, CancellationToken ct = default);
     Task<IReadOnlyList<GpoVersion>> GetHistoryAsync(Guid controlledGpoId, CancellationToken ct = default);
 }

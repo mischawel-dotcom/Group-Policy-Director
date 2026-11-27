@@ -19,7 +19,63 @@ public enum ControlledGpoStatus
     WaitingApproval = 3,
     Deployed = 4,
     /// <summary>Approved, waiting for Deploy.</summary>
-    Approved = 5
+    Approved = 5,
+    /// <summary>Approved and queued for a scheduled Deploy (Slice 8).</summary>
+    Scheduled = 6
+}
+
+public enum ScheduledDeployObjectKind
+{
+    Gpo = 1,
+    Container = 2
+}
+
+public enum ScheduledDeployStatus
+{
+    Pending = 1,
+    Running = 2,
+    Succeeded = 3,
+    Failed = 4,
+    RolledBack = 5,
+    Cancelled = 6
+}
+
+/// <summary>Queued GPO or container deploy (Schedule + optional Rollback-on-failure).</summary>
+public sealed class ScheduledDeploy
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public ScheduledDeployObjectKind ObjectKind { get; init; }
+    public Guid ObjectId { get; init; }
+    public required string ObjectKey { get; init; }
+    public required string DisplayName { get; init; }
+    public Guid PendingVersionId { get; init; }
+    public DateTimeOffset ScheduledFor { get; set; }
+    public required string ScheduledBy { get; init; }
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+    public bool RollbackOnFailure { get; init; }
+    /// <summary>Dev/smoke: force AD deploy path to fail so rollback can be exercised.</summary>
+    public bool SimulateFailure { get; init; }
+    public ScheduledDeployStatus Status { get; set; } = ScheduledDeployStatus.Pending;
+    public DateTimeOffset? StartedAt { get; set; }
+    public DateTimeOffset? CompletedAt { get; set; }
+    public string? ErrorMessage { get; set; }
+    public string? ResultDetailJson { get; set; }
+    public DateTimeOffset? CancelledAt { get; set; }
+    public string? CancelledBy { get; set; }
+}
+
+/// <summary>Options for immediate or scheduled Deploy.</summary>
+public sealed class DeployOptions
+{
+    public bool RollbackOnFailure { get; init; }
+    public bool SimulateFailure { get; init; }
+}
+
+public sealed class ScheduleDeployRequest
+{
+    public DateTimeOffset ScheduledFor { get; init; }
+    public bool RollbackOnFailure { get; init; } = true;
+    public bool SimulateFailure { get; init; }
 }
 
 public sealed class ControlledGpo
@@ -39,6 +95,8 @@ public sealed class ControlledGpo
     public Guid? PendingVersionId { get; set; }
     public string? ApprovedBy { get; set; }
     public DateTimeOffset? ApprovedAt { get; set; }
+    /// <summary>Active pending schedule, if Status is Scheduled.</summary>
+    public Guid? ActiveScheduleId { get; set; }
 }
 
 public sealed class GpoVersion
@@ -174,6 +232,7 @@ public sealed class ControlledContainer
     public Guid? PendingVersionId { get; set; }
     public string? ApprovedBy { get; set; }
     public DateTimeOffset? ApprovedAt { get; set; }
+    public Guid? ActiveScheduleId { get; set; }
 }
 
 /// <summary>One GPO link on a container (gpLink entry).</summary>

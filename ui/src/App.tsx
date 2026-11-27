@@ -263,6 +263,26 @@ type AgpmReport = {
   notes: string
 }
 
+type ScheduledDeploy = {
+  id: string
+  objectKind: number
+  objectId: string
+  objectKey: string
+  displayName: string
+  pendingVersionId: string
+  scheduledFor: string
+  scheduledBy: string
+  createdAt: string
+  rollbackOnFailure: boolean
+  simulateFailure: boolean
+  status: number
+  startedAt?: string
+  completedAt?: string
+  errorMessage?: string
+  cancelledAt?: string
+  cancelledBy?: string
+}
+
 async function api<T>(path: string, init?: RequestInit, actor?: string): Promise<T> {
   const headers: Record<string, string> = {
     ...(init?.headers as Record<string, string> | undefined),
@@ -295,8 +315,25 @@ function statusLabel(status: number): string {
     case 3: return 'Waiting Approval'
     case 4: return 'Deployed'
     case 5: return 'Approved'
+    case 6: return 'Scheduled'
     default: return String(status)
   }
+}
+
+function scheduleStatusLabel(status: number): string {
+  switch (status) {
+    case 1: return 'Pending'
+    case 2: return 'Running'
+    case 3: return 'Succeeded'
+    case 4: return 'Failed'
+    case 5: return 'RolledBack'
+    case 6: return 'Cancelled'
+    default: return String(status)
+  }
+}
+
+function scheduleObjectKindLabel(kind: number): string {
+  return kind === 2 ? 'Container' : 'GPO'
 }
 
 function adModeLabel(mode: number): string {
@@ -500,6 +537,21 @@ export default function App() {
   const [rpLabel, setRpLabel] = useState('Security Settings')
   const [wizard, setWizard] = useState<WelcomeWizard | null>(null)
   const [showWizard, setShowWizard] = useState(false)
+  const [deployQueue, setDeployQueue] = useState<ScheduledDeploy[]>([])
+  const [scheduleAt, setScheduleAt] = useState(() => {
+    const d = new Date(Date.now() + 60_000)
+    d.setSeconds(0, 0)
+    return d.toISOString().slice(0, 16)
+  })
+  const [rollbackOnFail, setRollbackOnFail] = useState(true)
+  const [simulateFail, setSimulateFail] = useState(false)
+  const [containerScheduleAt, setContainerScheduleAt] = useState(() => {
+    const d = new Date(Date.now() + 60_000)
+    d.setSeconds(0, 0)
+    return d.toISOString().slice(0, 16)
+  })
+  const [containerRollbackOnFail, setContainerRollbackOnFail] = useState(true)
+  const [containerSimulateFail, setContainerSimulateFail] = useState(false)
 
   const refreshDelegation = useCallback(async () => {
     const [pr, oroles, sug, hints, sessions] = await Promise.all([
@@ -535,7 +587,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     setError('')
     try {
-      const [m, d, g, env, oob, c, smtpView, gen, rp, hints, wiz] = await Promise.all([
+      const [m, d, g, env, oob, c, smtpView, gen, rp, hints, wiz, queue] = await Promise.all([
         api<Me>('/api/me', undefined, actor),
         api<Domain[]>('/api/domains', undefined, actor),
         api<ControlledGpo[]>('/api/gpos', undefined, actor),
@@ -547,6 +599,7 @@ export default function App() {
         api<RestrictedPolicyArea[]>('/api/restricted-policies', undefined, actor),
         api<string[]>('/api/restricted-policies/area-hints', undefined, actor),
         api<WelcomeWizard>('/api/wizard', undefined, actor),
+        api<ScheduledDeploy[]>('/api/deploy-queue', undefined, actor),
       ])
       setMe(m)
       setDomains(d)
@@ -554,6 +607,7 @@ export default function App() {
       setAdEnv(env)
       setOobHits(oob)
       setContainers(c)
+      setDeployQueue(queue)
       setSmtp(smtpView)
       setSmtpHost(smtpView.host)
       setSmtpPort(smtpView.port)
@@ -934,9 +988,59 @@ export default function App() {
     if (!selectedContainerId) return
     setError('')
     try {
-      await api(`/api/containers/${selectedContainerId}/deploy`, { method: 'POST' }, actor)
+      await api(
+        `/api/containers/${selectedContainerId}/deploy`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            rollbackOnFailure: containerRollbackOnFail,
+            simulateFailure: containerSimulateFail,
+          }),
+        },
+        actor,
+      )
       const mode = adEnv ? adModeLabel(adEnv.effectiveMode) : 'DryRun'
       setMessage(`Container Deployed — gpLink geschrieben (${mode}).`)
+      await refresh()
+      await selectContainer(selectedContainerId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function scheduleContainerDeploy() {
+    if (!selectedContainerId) return
+    setError('')
+    try {
+      const scheduledFor = new Date(containerScheduleAt).toISOString()
+      const job = await api<ScheduledDeploy>(
+        `/api/containers/${selectedContainerId}/schedule-deploy`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            scheduledFor,
+            rollbackOnFailure: containerRollbackOnFail,
+            simulateFailure: containerSimulateFail,
+          }),
+        },
+        actor,
+      )
+      setMessage(
+        `Container Deploy geplant für ${new Date(job.scheduledFor).toLocaleString('de-DE')} (Rollback-on-fail: ${job.rollbackOnFailure ? 'ja' : 'nein'}).`,
+      )
+      await refresh()
+      await selectContainer(selectedContainerId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function cancelContainerSchedule() {
+    if (!selectedContainerId) return
+    setError('')
+    try {
+      await api(`/api/containers/${selectedContainerId}/cancel-schedule`, { method: 'POST' }, actor)
+      setMessage('Container-Schedule storniert — Status wieder Approved.')
       await refresh()
       await selectContainer(selectedContainerId)
     } catch (e) {
@@ -1159,11 +1263,85 @@ export default function App() {
     if (!selectedId) return
     setError('')
     try {
-      await api(`/api/gpos/${selectedId}/deploy`, { method: 'POST' }, actor)
+      await api(
+        `/api/gpos/${selectedId}/deploy`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            rollbackOnFailure: rollbackOnFail,
+            simulateFailure: simulateFail,
+          }),
+        },
+        actor,
+      )
       const mode = adEnv ? adModeLabel(adEnv.effectiveMode) : 'DryRun'
       setMessage(`Deployed — Produktion aktualisiert (${mode}).`)
       await refresh()
       await selectGpo(selectedId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function scheduleDeploy() {
+    if (!selectedId) return
+    setError('')
+    try {
+      const scheduledFor = new Date(scheduleAt).toISOString()
+      const job = await api<ScheduledDeploy>(
+        `/api/gpos/${selectedId}/schedule-deploy`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            scheduledFor,
+            rollbackOnFailure: rollbackOnFail,
+            simulateFailure: simulateFail,
+          }),
+        },
+        actor,
+      )
+      setMessage(
+        `GPO Deploy geplant für ${new Date(job.scheduledFor).toLocaleString('de-DE')} (Rollback-on-fail: ${job.rollbackOnFailure ? 'ja' : 'nein'}).`,
+      )
+      await refresh()
+      await selectGpo(selectedId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function cancelGpoSchedule() {
+    if (!selectedId) return
+    setError('')
+    try {
+      await api(`/api/gpos/${selectedId}/cancel-schedule`, { method: 'POST' }, actor)
+      setMessage('GPO-Schedule storniert — Status wieder Approved.')
+      await refresh()
+      await selectGpo(selectedId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function processDueDeploys() {
+    setError('')
+    try {
+      const done = await api<ScheduledDeploy[]>('/api/deploy-queue/process-due', { method: 'POST' }, actor)
+      setMessage(`Process-due: ${done.length} Job(s) verarbeitet.`)
+      await refresh()
+      if (selectedId) await selectGpo(selectedId)
+      if (selectedContainerId) await selectContainer(selectedContainerId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function cancelQueueJob(id: string) {
+    setError('')
+    try {
+      await api(`/api/deploy-queue/${id}/cancel`, { method: 'POST' }, actor)
+      setMessage('Schedule storniert.')
+      await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -1362,7 +1540,7 @@ export default function App() {
         <p className="brand">Group Policy Director</p>
         <h1>Take Control → Checkout → Approve → Deploy</h1>
         <p className="lede">
-          Slice 7 — GPO Naming-Regex, Restricted Policies (Area-Deny), Welcome Wizard. Branding bleibt Referenz-Tools. Kein Intune.
+          Slice 8 — Scheduled Deploy + Rollback-on-fail (GPO & Container), Deploy-Queue. Branding bleibt Referenz-Tools. Kein Intune.
         </p>
         {me ? (
           <p className="identity">
@@ -1944,14 +2122,106 @@ export default function App() {
                   Reject
                 </button>
                 <button type="button" onClick={() => void deploy()}>
-                  Deploy
+                  Deploy now
+                </button>
+              </div>
+              <div className="actions">
+                <label>
+                  Schedule
+                  <input
+                    type="datetime-local"
+                    value={scheduleAt}
+                    onChange={(e) => setScheduleAt(e.target.value)}
+                  />
+                </label>
+                <label className="checkbox-label">
+                  Rollback-on-fail
+                  <input
+                    type="checkbox"
+                    checked={rollbackOnFail}
+                    onChange={(e) => setRollbackOnFail(e.target.checked)}
+                  />
+                </label>
+                <label className="checkbox-label">
+                  Simulate fail
+                  <input
+                    type="checkbox"
+                    checked={simulateFail}
+                    onChange={(e) => setSimulateFail(e.target.checked)}
+                  />
+                </label>
+                <button type="button" onClick={() => void scheduleDeploy()}>
+                  Schedule Deploy
+                </button>
+                <button type="button" className="secondary" onClick={() => void cancelGpoSchedule()}>
+                  Cancel Schedule
                 </button>
               </div>
               <p className="muted">
-                SoD: Editor ≠ Approver/Deployer. Temp-GPO id stays until Deploy/Reject.
+                SoD: Editor ≠ Approver/Deployer. Temp-GPO id stays until Deploy/Reject. Status Scheduled = in Queue.
               </p>
             </>
           ) : null}
+        </section>
+
+        <section className="panel workflow-panel">
+          <h2>Deploy Queue &amp; Status</h2>
+          <p className="muted">
+            Geplante GPO-/Container-Deploys. Hosted Processor pollt fällige Jobs; Manual Process-due für Smoke-Tests.
+          </p>
+          <div className="actions">
+            <button type="button" onClick={() => void processDueDeploys()}>
+              Process due now
+            </button>
+          </div>
+          <div className="audit-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Object</th>
+                  <th>By</th>
+                  <th>Flags</th>
+                  <th>Status</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {deployQueue.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="muted">
+                      Keine geplanten Deploys.
+                    </td>
+                  </tr>
+                ) : (
+                  deployQueue.map((j) => (
+                    <tr key={j.id} title={j.errorMessage ?? ''}>
+                      <td>{new Date(j.scheduledFor).toLocaleString('de-DE')}</td>
+                      <td>
+                        <strong>
+                          {scheduleObjectKindLabel(j.objectKind)} · {j.displayName}
+                        </strong>
+                        <div className="muted">{j.objectKey}</div>
+                      </td>
+                      <td>{j.scheduledBy}</td>
+                      <td>
+                        {j.rollbackOnFailure ? 'Rollback' : 'No rollback'}
+                        {j.simulateFailure ? ' · SimulateFail' : ''}
+                      </td>
+                      <td>{scheduleStatusLabel(j.status)}</td>
+                      <td>
+                        {j.status === 1 ? (
+                          <button type="button" className="secondary" onClick={() => void cancelQueueJob(j.id)}>
+                            Cancel
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section className="panel settings-panel">
@@ -2112,7 +2382,39 @@ export default function App() {
                   Reject
                 </button>
                 <button type="button" onClick={() => void containerDeploy()}>
-                  Deploy
+                  Deploy now
+                </button>
+              </div>
+              <div className="actions">
+                <label>
+                  Schedule
+                  <input
+                    type="datetime-local"
+                    value={containerScheduleAt}
+                    onChange={(e) => setContainerScheduleAt(e.target.value)}
+                  />
+                </label>
+                <label className="checkbox-label">
+                  Rollback-on-fail
+                  <input
+                    type="checkbox"
+                    checked={containerRollbackOnFail}
+                    onChange={(e) => setContainerRollbackOnFail(e.target.checked)}
+                  />
+                </label>
+                <label className="checkbox-label">
+                  Simulate fail
+                  <input
+                    type="checkbox"
+                    checked={containerSimulateFail}
+                    onChange={(e) => setContainerSimulateFail(e.target.checked)}
+                  />
+                </label>
+                <button type="button" onClick={() => void scheduleContainerDeploy()}>
+                  Schedule Deploy
+                </button>
+                <button type="button" className="secondary" onClick={() => void cancelContainerSchedule()}>
+                  Cancel Schedule
                 </button>
               </div>
             </>
@@ -2449,7 +2751,7 @@ export default function App() {
 
       <footer>
         <p>
-          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 7 Naming / Restricted / Wizard · Referenz-Tools branding · keine Tier-Gates · kein Intune · kein Auto-Reset
+          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 8 Scheduled Deploy / Rollback · Referenz-Tools branding · keine Tier-Gates · kein Intune · kein Auto-Reset
         </p>
       </footer>
     </div>

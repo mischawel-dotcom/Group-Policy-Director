@@ -19,6 +19,7 @@ public sealed class GpdStore
     public List<AuditEvent> Audit { get; } = [];
     public List<OobDetection> OobDetections { get; } = [];
     public List<RestrictedPolicyArea> RestrictedPolicies { get; } = [];
+    public List<ScheduledDeploy> ScheduledDeploys { get; } = [];
     /// <summary>Working / production settings trees keyed by ControlledGpo Id.</summary>
     public Dictionary<Guid, PolicyTreeNode> SettingsTrees { get; } = new();
     /// <summary>Working link sets keyed by ControlledContainer Id.</summary>

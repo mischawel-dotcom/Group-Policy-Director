@@ -32,6 +32,10 @@ public interface IContainerWorkflowService
 
     Task<ControlledContainer> DeployAsync(Guid containerId, string actor, CancellationToken ct = default);
 
+    Task<ControlledContainer> DeployAsync(Guid containerId, string actor, DeployOptions options, CancellationToken ct = default);
+
+    Task EnsureCanDeployAsync(Guid containerId, string actor, CancellationToken ct = default);
+
     Task<IReadOnlyList<ContainerVersion>> GetHistoryAsync(Guid containerId, CancellationToken ct = default);
 
     Task<VersionDiffResult> DiffVersionsAsync(Guid containerId, int fromVersion, int toVersion, CancellationToken ct = default);
