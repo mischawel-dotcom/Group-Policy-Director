@@ -40,6 +40,16 @@ Optional Worker:
 dotnet run --project src/GroupPolicyDirector.Worker
 ```
 
+## Windows-Paket (Lab)
+
+Self-contained **win-x64** Publish von API (+ UI in `wwwroot`) und Worker, plus MSI/ZIP:
+
+```bash
+./packaging/build.sh
+```
+
+Details (Voraussetzungen, Silent-Install, `ForceDryRun` vs. Live-AD): **[docs/install.md](docs/install.md)**.
+
 ## Workflow (Slice 8)
 
 1. Editor → Check-in → Approver → Approve
