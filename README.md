@@ -1,7 +1,7 @@
 # Group Policy Director
 
 Moderner AGPM-Nachfolger mit Change-Control für Group Policy (on-prem first).  
-**Slice 1:** Foundation — API, UI-Skeleton, SQL-Schema-Stubs, Windows-Auth-Platzhalter, Delegation, Take Control / Checkout / Historie, OOB-Mail-Stubs, AGPM-Import-Dry-Run.
+**Slice 2:** Approve / Deploy mit SoD, editierbarer GPMC-Settings-Tree, End-to-End-Workflow in der UI (AD-Fakes ohne Domäne).
 
 ## Struktur
 
@@ -11,14 +11,15 @@ src/GroupPolicyDirector.Worker/          Hintergrunddienst (OOB-Scan)
 src/GroupPolicyDirector.Core/            Domain & Contracts
 src/GroupPolicyDirector.Infrastructure/  In-Memory-Stubs (SQL folgt)
 ui/                                      React + TypeScript (Vite)
-database/schema/001_initial.sql          SQL Server Schema-Stubs
+database/schema/                         SQL Server Schema-Stubs
+docs/slice-1.md, docs/slice-2.md         Slice-Notizen
 ```
 
 ## Voraussetzungen
 
 - .NET 9 SDK
 - Node.js 20+ (für die UI)
-- Windows (Zielplattform); lokale Dev ohne Domäne nutzt Auth-Stub
+- Windows (Zielplattform); lokale Dev ohne Domäne nutzt Auth-Stub + Demo-Akteure
 
 ## Schnellstart
 
@@ -38,17 +39,30 @@ Optional Worker:
 dotnet run --project src/GroupPolicyDirector.Worker
 ```
 
-## Slice-1-API (Auszug)
+## Workflow (Slice 2)
+
+1. Domain registrieren → Take Control  
+2. **Editor** (`CONTOSO\gpd-editor`): Checkout → Settings Tree editieren → Check-in  
+3. **Approver** (`CONTOSO\gpd-approver`): Approve (oder Reject)  
+4. **Deployer** (`CONTOSO\gpd-deployer`): Deploy  
+
+SoD: der Editor der Pending-Version darf weder Approve noch Deploy. Trustee sind AD-Admin-Rollengruppen (`CONTOSO\GPD-Editors` / `Approvers` / `Deployers`); Mitgliedschaft zur Login-Zeit (Stub-Tabelle ohne Domäne).
+
+Demo-Akteur in der UI umschalten — API-Header `X-Gpd-Actor`.
+
+## API (Auszug)
 
 | Methode | Pfad | Zweck |
 |---------|------|--------|
-| GET | `/api/health` | Health |
-| GET | `/api/me` | Windows-/Dev-Identität + Rollen |
+| GET | `/api/me` | Identität, Rollen, Demo-Akteure |
 | POST | `/api/domains` | Domain registrieren |
 | POST | `/api/gpos/take-control` | GPO unter Kontrolle |
-| POST | `/api/gpos/{id}/checkout` | Checkout (OOB-Hinweis möglich) |
-| GET | `/api/gpos/{id}/settings-tree` | Read-only Policy-Tree |
-| POST | `/api/gpos/{id}/check-in` | Check-in mit Kommentar |
+| POST | `/api/gpos/{id}/checkout` | Checkout |
+| GET/PUT | `/api/gpos/{id}/settings-tree` | Policy-Tree lesen / editieren |
+| POST | `/api/gpos/{id}/check-in` | Check-in → Waiting Approval |
+| POST | `/api/gpos/{id}/approve` | Freigabe |
+| POST | `/api/gpos/{id}/reject` | Ablehnung |
+| POST | `/api/gpos/{id}/deploy` | Deploy (Produktion-Stub) |
 | GET | `/api/gpos/{id}/history` | Historie |
 | POST/GET | `/api/delegation/*` | Product-/Objektrollen an AD-Gruppen |
 | POST | `/api/oob/scan` | OOB-Erkennung + Mail-Stub |
@@ -56,24 +70,16 @@ dotnet run --project src/GroupPolicyDirector.Worker
 
 ## Auth
 
-- **Entwicklung:** `Auth:UseNegotiate=false` → Stub-Identität `CONTOSO\gpd-admin` (Product Admin).
+- **Entwicklung:** `Auth:UseNegotiate=false` → Stub + optional `X-Gpd-Actor`.
 - **Produktion (Platzhalter):** `Auth:UseNegotiate=true` aktiviert Windows Negotiate/Kerberos.
-
-## Delegation
-
-Product Admins vergeben im Tool Rechte auf **OU-** und **GPO-Ebene** (Editor / Approver / Deployer) an bestehende **AD-Admin-Rollengruppen**. Gruppenmitgliedschaft wird zur Login-Zeit ausgewertet (Slice 1: Stub-Match).
 
 ## OOB (Mail-first)
 
-Erkennung von Drift außerhalb des Tools; SMTP-Stub loggt Mails. **Kein** Auto-Reset in Slice 1. Demo: GPO-Namen mit `OOB-DEMO` erzeugen künstlichen Drift.
+Unverändert: Drift-Erkennung + SMTP-Stub. **Kein** Auto-Reset. **Keine** Tier-Gates.
 
-## AGPM
+## Nicht in Slice 2
 
-Dry-Run scannt einen Archivpfad und liefert einen Report — **ohne** Historie zu schreiben (noch keine Sample-Archive).
-
-## Nicht in Slice 1
-
-Intune, Entra SSO, Approve/Deploy-UI, vollständiger Settings-Write, Container-Links, Tier-Gates, Auto-OOB-Reset.
+Intune, Entra SSO, Tier-/ESAE-Gates, Auto-OOB-Reset, echte AD/GPMC-Schreibpfade, Container-Links.
 
 ## Lizenz / Marke
 
