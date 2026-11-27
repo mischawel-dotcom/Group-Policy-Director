@@ -5,73 +5,116 @@ using Microsoft.Extensions.Logging;
 namespace GroupPolicyDirector.Infrastructure.Services;
 
 /// <summary>
-/// AGPM history import dry-run stub. No sample archive available yet — reports structure only.
+/// AGPM history import dry-run: parses directory/zip archives (fixture-compatible layout) and maps to controlled GPOs.
+/// Write/import remains out of scope for Slice 4.
 /// </summary>
 public sealed class AgpmImportDryRunService(GpdStore store, ILogger<AgpmImportDryRunService> logger) : IAgpmImportService
 {
-    public Task<AgpmDryRunReport> DryRunAsync(AgpmDryRunRequest request, CancellationToken ct = default)
+    public async Task<AgpmDryRunReport> DryRunAsync(AgpmDryRunRequest request, CancellationToken ct = default)
     {
-        logger.LogInformation("AGPM dry-run for archive path {Path}", request.ArchivePath);
+        logger.LogInformation(
+            "AGPM dry-run path={Path} zip={HasZip} file={File}",
+            request.ArchivePath,
+            request.ArchiveZipBytes is { Length: > 0 },
+            request.ArchiveFileName);
+
+        var parsed = await AgpmArchiveParser.ParseAsync(
+            request.ArchivePath,
+            request.ArchiveZipBytes,
+            request.ArchiveFileName,
+            ct);
 
         var conflicts = new List<AgpmDryRunConflict>();
+        var entries = new List<AgpmArchiveGpoEntry>();
         var mappable = 0;
+        var unmapped = 0;
         var versionsFound = 0;
 
-        if (string.IsNullOrWhiteSpace(request.ArchivePath))
+        if (parsed.ArchivesScanned == 0 || parsed.Folders.Count == 0)
         {
-            conflicts.Add(new AgpmDryRunConflict
-            {
-                GpoId = "(none)",
-                Reason = "Archive path is empty."
-            });
-        }
-        else if (!Directory.Exists(request.ArchivePath) && !File.Exists(request.ArchivePath))
-        {
-            // Expected until real AGPM archives are provided.
             conflicts.Add(new AgpmDryRunConflict
             {
                 GpoId = "(archive)",
-                Reason = $"Path not found: {request.ArchivePath}. Provide AGPM history archive for real parse."
+                Reason = parsed.Notes,
+                Severity = "Error"
             });
         }
-        else
+
+        Dictionary<string, Guid> controlledByProductionId;
+        lock (store.Sync)
         {
-            // Placeholder discovery: count files; real format parsing TBD when samples exist.
-            var files = Directory.Exists(request.ArchivePath)
-                ? Directory.EnumerateFiles(request.ArchivePath, "*", SearchOption.AllDirectories).Take(500).ToList()
-                : [request.ArchivePath];
+            controlledByProductionId = store.Gpos
+                .GroupBy(g => Normalize(g.ProductionGpoId), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
 
-            versionsFound = files.Count;
-            lock (store.Sync)
+            if (store.Gpos.Count == 0 && parsed.Folders.Count > 0)
             {
-                foreach (var gpo in store.Gpos)
+                conflicts.Add(new AgpmDryRunConflict
                 {
-                    mappable++;
-                }
-
-                if (store.Gpos.Count == 0)
-                {
-                    conflicts.Add(new AgpmDryRunConflict
-                    {
-                        GpoId = "(mapping)",
-                        Reason = "No GPOs under GPD control — Take Control required before import."
-                    });
-                }
+                    GpoId = "(mapping)",
+                    Reason = "No GPOs under GPD control — Take Control required before import.",
+                    Severity = "Warning"
+                });
             }
         }
 
-        var report = new AgpmDryRunReport
+        foreach (var folder in parsed.Folders)
         {
-            ArchivePath = request.ArchivePath,
-            ArchivesScanned = 1,
+            ct.ThrowIfCancellationRequested();
+            versionsFound += folder.VersionLabels.Count;
+            var key = Normalize(folder.GpoId);
+            controlledByProductionId.TryGetValue(key, out var controlledId);
+            var mapped = controlledId != Guid.Empty;
+
+            if (mapped)
+            {
+                mappable++;
+            }
+            else
+            {
+                unmapped++;
+                conflicts.Add(new AgpmDryRunConflict
+                {
+                    GpoId = folder.GpoId,
+                    Reason = "No controlled GPO with matching production GUID — Take Control first or map manually later.",
+                    Severity = "Warning"
+                });
+            }
+
+            entries.Add(new AgpmArchiveGpoEntry
+            {
+                SourceGpoId = folder.GpoId,
+                DisplayName = folder.DisplayName,
+                VersionCount = folder.VersionLabels.Count,
+                VersionLabels = folder.VersionLabels.ToList(),
+                MappedControlledGpoId = mapped ? controlledId.ToString() : null,
+                MappingStatus = mapped ? "Mappable" : "Unmapped",
+                Notes = mapped
+                    ? "Would import chronologically with provenance [AGPM]; re-entrant skip of already-imported versions TBD."
+                    : "Unmapped — excluded from write when import lands."
+            });
+        }
+
+        return new AgpmDryRunReport
+        {
+            ArchivePath = parsed.ArchivePath,
+            ArchiveFileName = request.ArchiveFileName,
+            Parser = "AgpmArchiveStubParser/v1",
+            ArchivesScanned = parsed.ArchivesScanned,
             VersionsFound = versionsFound,
             MappableGpos = mappable,
+            UnmappedGpos = unmapped,
+            Entries = entries,
             Conflicts = conflicts,
             Notes = request.PrintOnly
-                ? "Dry-run only (--print-only). No history written. Re-entrant import will skip already-imported versions later."
-                : "Write mode not implemented in Slice 1."
+                ? $"{parsed.Notes} Dry-run only (--print-only). No history written."
+                : $"{parsed.Notes} Write mode not implemented in Slice 4."
         };
+    }
 
-        return Task.FromResult(report);
+    private static string Normalize(string id)
+    {
+        var trimmed = id.Trim().Trim('{', '}');
+        return Guid.TryParse(trimmed, out var g) ? g.ToString("B").ToUpperInvariant() : id.Trim();
     }
 }

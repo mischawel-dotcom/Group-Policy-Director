@@ -73,10 +73,72 @@ type OobDetection = {
   resolution?: string
 }
 
+type ProductRoleAssignment = {
+  id: string
+  role: number
+  trusteePrincipal: string
+  grantedBy: string
+  grantedAt: string
+}
+
+type DelegationGrant = {
+  id: string
+  scopeKind: number
+  scopeKey: string
+  role: number
+  trusteePrincipal: string
+  inheritToChildren: boolean
+  grantedBy: string
+  grantedAt: string
+}
+
+type SuggestedTrustee = {
+  principal: string
+  kind: string
+  description?: string
+}
+
+type ScopeHint = {
+  scopeKind: number
+  scopeKey: string
+  label?: string
+}
+
+type AgpmEntry = {
+  sourceGpoId: string
+  displayName?: string
+  versionCount: number
+  versionLabels: string[]
+  mappedControlledGpoId?: string
+  mappingStatus: string
+  notes?: string
+}
+
+type AgpmConflict = {
+  gpoId: string
+  reason: string
+  severity?: string
+}
+
+type AgpmReport = {
+  archivePath: string
+  archiveFileName?: string
+  parser: string
+  archivesScanned: number
+  versionsFound: number
+  mappableGpos: number
+  unmappedGpos: number
+  entries: AgpmEntry[]
+  conflicts: AgpmConflict[]
+  notes: string
+}
+
 async function api<T>(path: string, init?: RequestInit, actor?: string): Promise<T> {
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     ...(init?.headers as Record<string, string> | undefined),
+  }
+  if (!(init?.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json'
   }
   if (actor) {
     headers['X-Gpd-Actor'] = actor
@@ -89,6 +151,9 @@ async function api<T>(path: string, init?: RequestInit, actor?: string): Promise
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error ?? `${res.status} ${res.statusText}`)
+  }
+  if (res.status === 204) {
+    return undefined as T
   }
   return res.json() as Promise<T>
 }
@@ -106,6 +171,29 @@ function statusLabel(status: number): string {
 
 function adModeLabel(mode: number): string {
   return mode === 1 ? 'Live' : 'DryRun'
+}
+
+function productRoleLabel(role: number): string {
+  switch (role) {
+    case 1: return 'ProductAdministrator'
+    case 2: return 'GpoCreator'
+    case 3: return 'BreakGlass'
+    case 4: return 'Auditor'
+    default: return String(role)
+  }
+}
+
+function objectRoleLabel(role: number): string {
+  switch (role) {
+    case 1: return 'Editor'
+    case 2: return 'Approver'
+    case 3: return 'Deployer'
+    default: return String(role)
+  }
+}
+
+function scopeKindLabel(kind: number): string {
+  return kind === 1 ? 'OU' : 'GPO'
 }
 
 function TreeNodeView({
@@ -201,11 +289,36 @@ export default function App() {
   const [gpoName, setGpoName] = useState('Demo Workstation Policy')
   const [checkInComment, setCheckInComment] = useState('')
   const [reviewComment, setReviewComment] = useState('')
-  const [agpmPath, setAgpmPath] = useState('C:\\AGPM\\History')
-  const [agpmReport, setAgpmReport] = useState<string>('')
+  const [agpmPath, setAgpmPath] = useState('')
+  const [agpmReport, setAgpmReport] = useState<AgpmReport | null>(null)
+  const [agpmFile, setAgpmFile] = useState<File | null>(null)
+  const [productRoles, setProductRoles] = useState<ProductRoleAssignment[]>([])
+  const [objectRoles, setObjectRoles] = useState<DelegationGrant[]>([])
+  const [trustees, setTrustees] = useState<SuggestedTrustee[]>([])
+  const [scopeHints, setScopeHints] = useState<ScopeHint[]>([])
+  const [delScopeKind, setDelScopeKind] = useState(1)
+  const [delScopeKey, setDelScopeKey] = useState('OU=Workstations,DC=contoso,DC=local')
+  const [delRole, setDelRole] = useState(1)
+  const [delTrustee, setDelTrustee] = useState('CONTOSO\\GPD-Editors')
+  const [delInherit, setDelInherit] = useState(true)
+  const [prodRole, setProdRole] = useState(2)
+  const [prodTrustee, setProdTrustee] = useState('CONTOSO\\GPD-ProductAdmins')
   const [message, setMessage] = useState<string>('')
   const [error, setError] = useState<string>('')
   const [pendingEdits, setPendingEdits] = useState<Record<string, { state?: string; value?: string }>>({})
+
+  const refreshDelegation = useCallback(async () => {
+    const [pr, oroles, sug, hints] = await Promise.all([
+      api<ProductRoleAssignment[]>('/api/delegation/product-roles', undefined, actor),
+      api<DelegationGrant[]>('/api/delegation/object-roles', undefined, actor),
+      api<SuggestedTrustee[]>('/api/delegation/suggested-trustees', undefined, actor),
+      api<ScopeHint[]>('/api/delegation/scope-hints', undefined, actor),
+    ])
+    setProductRoles(pr)
+    setObjectRoles(oroles)
+    setTrustees(sug)
+    setScopeHints(hints)
+  }, [actor])
 
   const refresh = useCallback(async () => {
     setError('')
@@ -226,10 +339,15 @@ export default function App() {
         const current = g.find((x) => x.id === selectedId) ?? null
         setSelected(current)
       }
+      await refreshDelegation()
+      const fixture = await api<{ available: boolean; path?: string }>('/api/agpm/fixture', undefined, actor)
+      if (fixture.available && fixture.path) {
+        setAgpmPath((prev) => prev || fixture.path || '')
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [actor, selectedId])
+  }, [actor, selectedId, refreshDelegation])
 
   useEffect(() => {
     void refresh()
@@ -438,15 +556,92 @@ export default function App() {
     }
   }
 
-  async function agpmDryRun() {
+  async function agpmDryRunPath() {
     setError('')
     try {
-      const report = await api<Record<string, unknown>>('/api/agpm/import/dry-run', {
+      const report = await api<AgpmReport>('/api/agpm/import/dry-run', {
         method: 'POST',
         body: JSON.stringify({ archivePath: agpmPath, printOnly: true }),
       }, actor)
-      setAgpmReport(JSON.stringify(report, null, 2))
-      setMessage('AGPM dry-run complete (no writes).')
+      setAgpmReport(report)
+      setMessage(`AGPM dry-run: ${report.mappableGpos} mappable / ${report.unmappedGpos} unmapped.`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function agpmDryRunUpload() {
+    if (!agpmFile) {
+      setError('Choose a .zip archive (fixture OK).')
+      return
+    }
+    setError('')
+    try {
+      const form = new FormData()
+      form.append('archive', agpmFile)
+      form.append('printOnly', 'true')
+      const report = await api<AgpmReport>('/api/agpm/import/dry-run/upload', {
+        method: 'POST',
+        body: form,
+      }, actor)
+      setAgpmReport(report)
+      setMessage(`AGPM upload dry-run: ${report.versionsFound} version(s) in ${report.entries.length} GPO(s).`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function grantObjectRole() {
+    setError('')
+    try {
+      await api('/api/delegation/object-roles', {
+        method: 'POST',
+        body: JSON.stringify({
+          scopeKind: delScopeKind,
+          scopeKey: delScopeKey,
+          role: delRole,
+          trusteePrincipal: delTrustee,
+          inheritToChildren: delInherit,
+        }),
+      }, actor)
+      setMessage(`Granted ${objectRoleLabel(delRole)} on ${scopeKindLabel(delScopeKind)} to ${delTrustee}.`)
+      await refreshDelegation()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function revokeObjectRole(id: string) {
+    setError('')
+    try {
+      await api(`/api/delegation/object-roles/${id}`, { method: 'DELETE' }, actor)
+      setMessage('Object role revoked.')
+      await refreshDelegation()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function grantProductRole() {
+    setError('')
+    try {
+      await api('/api/delegation/product-roles', {
+        method: 'POST',
+        body: JSON.stringify({ role: prodRole, trusteePrincipal: prodTrustee }),
+      }, actor)
+      setMessage(`Granted product role ${productRoleLabel(prodRole)} to ${prodTrustee}.`)
+      await refreshDelegation()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function revokeProductRole(id: string) {
+    setError('')
+    try {
+      await api(`/api/delegation/product-roles/${id}`, { method: 'DELETE' }, actor)
+      setMessage('Product role revoked.')
+      await refreshDelegation()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -466,7 +661,7 @@ export default function App() {
         <p className="brand">Group Policy Director</p>
         <h1>Take Control → Checkout → Approve → Deploy</h1>
         <p className="lede">
-          Slice 3 — AD Temp-GPO path with domain detection, OOB baseline-vs-live + SMTP, wired into the Slice 2 workflow.
+          Slice 4 — AGPM archive dry-run report + Admin-Delegation an AD-Rollengruppen. Slice 3 AD/OOB bleibt erhalten.
         </p>
         {me ? (
           <p className="identity">
@@ -558,6 +753,135 @@ export default function App() {
           <p className="muted">
             Live: LDAP ACL lockdown plan/bind. Offline: dry-run steps + baseline seed. Delegation-Seed: GPD-Editors / Approvers / Deployers.
           </p>
+        </section>
+
+        <section className="panel delegation-panel">
+          <h2>Delegation (OU / GPO → AD-Gruppen)</h2>
+          <p className="muted">
+            Product Admin vergibt Objektrollen an bestehende AD-Admin-Rollengruppen (Referenz-Tools-Modell). SoD: Editor ≠ Approver/Deployer.
+          </p>
+
+          <h3>Objektrollen</h3>
+          <div className="row">
+            <label>
+              Scope
+              <select
+                value={delScopeKind}
+                onChange={(e) => {
+                  const kind = Number(e.target.value)
+                  setDelScopeKind(kind)
+                  const hint = scopeHints.find((h) => h.scopeKind === kind)
+                  if (hint) setDelScopeKey(hint.scopeKey)
+                }}
+              >
+                <option value={1}>OU / Container</option>
+                <option value={2}>GPO</option>
+              </select>
+            </label>
+            <label>
+              Scope-Key
+              <input
+                list="scope-hints"
+                value={delScopeKey}
+                onChange={(e) => setDelScopeKey(e.target.value)}
+              />
+              <datalist id="scope-hints">
+                {scopeHints
+                  .filter((h) => h.scopeKind === delScopeKind)
+                  .map((h) => (
+                    <option key={`${h.scopeKind}-${h.scopeKey}`} value={h.scopeKey}>
+                      {h.label ?? h.scopeKey}
+                    </option>
+                  ))}
+              </datalist>
+            </label>
+            <label>
+              Rolle
+              <select value={delRole} onChange={(e) => setDelRole(Number(e.target.value))}>
+                <option value={1}>Editor</option>
+                <option value={2}>Approver</option>
+                <option value={3}>Deployer</option>
+              </select>
+            </label>
+            <label>
+              Trustee (AD-Gruppe)
+              <input
+                list="trustee-hints"
+                value={delTrustee}
+                onChange={(e) => setDelTrustee(e.target.value)}
+              />
+              <datalist id="trustee-hints">
+                {trustees.map((t) => (
+                  <option key={t.principal} value={t.principal}>
+                    {t.description ?? t.kind}
+                  </option>
+                ))}
+              </datalist>
+            </label>
+            <label className="checkbox-label">
+              Vererbung
+              <input
+                type="checkbox"
+                checked={delInherit}
+                onChange={(e) => setDelInherit(e.target.checked)}
+              />
+            </label>
+            <button type="button" onClick={() => void grantObjectRole()}>
+              Gewähren
+            </button>
+          </div>
+          <ul className="delegation-list">
+            {objectRoles.map((g) => (
+              <li key={g.id}>
+                <span>
+                  <strong>{scopeKindLabel(g.scopeKind)}</strong> {g.scopeKey}
+                  {' · '}
+                  {objectRoleLabel(g.role)} → {g.trusteePrincipal}
+                  {g.inheritToChildren ? ' (inherit)' : ''}
+                </span>
+                <button type="button" className="secondary" onClick={() => void revokeObjectRole(g.id)}>
+                  Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+
+          <h3>Produktrollen</h3>
+          <div className="row">
+            <label>
+              Rolle
+              <select value={prodRole} onChange={(e) => setProdRole(Number(e.target.value))}>
+                <option value={1}>ProductAdministrator</option>
+                <option value={2}>GpoCreator</option>
+                <option value={3}>BreakGlass</option>
+                <option value={4}>Auditor</option>
+              </select>
+            </label>
+            <label>
+              Trustee
+              <input
+                list="trustee-hints"
+                value={prodTrustee}
+                onChange={(e) => setProdTrustee(e.target.value)}
+              />
+            </label>
+            <button type="button" onClick={() => void grantProductRole()}>
+              Gewähren
+            </button>
+          </div>
+          <ul className="delegation-list">
+            {productRoles.map((p) => (
+              <li key={p.id}>
+                <span>
+                  {productRoleLabel(p.role)} → {p.trusteePrincipal}
+                  <span className="muted"> · by {p.grantedBy}</span>
+                </span>
+                <button type="button" className="secondary" onClick={() => void revokeProductRole(p.id)}>
+                  Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
         </section>
 
         <section className="panel workflow-panel">
@@ -694,22 +1018,91 @@ export default function App() {
           ) : (
             <p className="muted">Keine OOB-Detections.</p>
           )}
-          <div className="row" style={{ marginTop: '1rem' }}>
+        </section>
+
+        <section className="panel agpm-panel">
+          <h2>AGPM Import Dry-Run</h2>
+          <p className="muted">
+            Archive-Parser (GUID-Ordner, Backup.xml, manifest.json, .zip). Kein History-Write — nur Report.
+          </p>
+          <div className="row">
             <label>
-              AGPM-Archivpfad
+              Archivpfad (Ordner oder .zip)
               <input value={agpmPath} onChange={(e) => setAgpmPath(e.target.value)} />
             </label>
-            <button type="button" onClick={() => void agpmDryRun()}>
-              AGPM Dry-Run
+            <button type="button" onClick={() => void agpmDryRunPath()}>
+              Dry-Run Pfad
             </button>
           </div>
-          {agpmReport ? <pre className="report">{agpmReport}</pre> : null}
+          <div className="row">
+            <label>
+              Fixture / Archive Upload (.zip)
+              <input
+                type="file"
+                accept=".zip,application/zip"
+                onChange={(e) => setAgpmFile(e.target.files?.[0] ?? null)}
+              />
+            </label>
+            <button type="button" onClick={() => void agpmDryRunUpload()}>
+              Dry-Run Upload
+            </button>
+          </div>
+          {agpmReport ? (
+            <div className="agpm-report">
+              <p>
+                <strong>{agpmReport.parser}</strong>
+                {' · '}
+                scanned={agpmReport.archivesScanned}
+                {' · '}
+                versions={agpmReport.versionsFound}
+                {' · '}
+                mappable={agpmReport.mappableGpos}
+                {' · '}
+                unmapped={agpmReport.unmappedGpos}
+              </p>
+              <p className="muted">{agpmReport.notes}</p>
+              {agpmReport.entries.length ? (
+                <table className="report-table">
+                  <thead>
+                    <tr>
+                      <th>GPO</th>
+                      <th>Versions</th>
+                      <th>Mapping</th>
+                      <th>Controlled Id</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agpmReport.entries.map((e) => (
+                      <tr key={e.sourceGpoId}>
+                        <td>
+                          <code>{e.sourceGpoId}</code>
+                          {e.displayName ? <div className="muted">{e.displayName}</div> : null}
+                        </td>
+                        <td>{e.versionCount} ({e.versionLabels.join(', ')})</td>
+                        <td>{e.mappingStatus}</td>
+                        <td>{e.mappedControlledGpoId ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : null}
+              {agpmReport.conflicts.length ? (
+                <ul className="conflict-list">
+                  {agpmReport.conflicts.map((c, i) => (
+                    <li key={`${c.gpoId}-${i}`}>
+                      <strong>{c.severity ?? 'Info'}</strong> {c.gpoId}: {c.reason}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
         </section>
       </main>
 
       <footer>
         <p>
-          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 3 AD/OOB · keine Tier-Gates
+          API: {API_BASE || '/api (proxy)'} · Header {`X-Gpd-Actor`} · Slice 4 AGPM/Delegation · Referenz-Tools branding · keine Tier-Gates
         </p>
       </footer>
     </div>
