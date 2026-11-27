@@ -19,6 +19,7 @@ public sealed class GpoWorkflowService(
     IAuditService audit,
     IOobDetectionService oob,
     IDelegationService delegation,
+    IBreakGlassService breakGlass,
     IGpoDirectoryService directory) : IGpoWorkflowService
 {
     public Task<IReadOnlyList<ControlledGpo>> ListControlledAsync(CancellationToken ct = default)
@@ -38,6 +39,7 @@ public sealed class GpoWorkflowService(
         CancellationToken ct = default)
     {
         await delegation.EnsureDemoTrusteesSeededAsync(ct);
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
 
         DomainRegistration domain;
         lock (store.Sync)
@@ -149,11 +151,14 @@ public sealed class GpoWorkflowService(
             }
         }
 
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
         if (!await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Editor, ct) &&
-            !await delegation.IsProductAdminOrBreakGlassAsync(actor, ct))
+            !await delegation.IsProductAdministratorAsync(actor, ct))
         {
-            throw new UnauthorizedAccessException("Editor (or Product Admin) role required to checkout.");
+            throw new UnauthorizedAccessException("Editor (or Product Admin / active Break Glass) role required to checkout.");
         }
+
+        await AuditBreakGlassUseAsync(actor, "Gpo.Checkout", gpo.ProductionGpoId, ct);
 
         var oobHit = await oob.ResolveAtCheckoutAsync(
             controlledGpoId,
@@ -237,6 +242,7 @@ public sealed class GpoWorkflowService(
         string actor,
         CancellationToken ct = default)
     {
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
         ControlledGpo gpo;
         lock (store.Sync)
         {
@@ -281,6 +287,7 @@ public sealed class GpoWorkflowService(
         string actor,
         CancellationToken ct = default)
     {
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
         if (string.IsNullOrWhiteSpace(comment))
         {
             throw new ArgumentException("Check-in comment is required.", nameof(comment));
@@ -492,19 +499,21 @@ public sealed class GpoWorkflowService(
                       ?? throw new InvalidOperationException("Pending version not found.");
         }
 
-        if (string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
+        var breakGlassActive = await breakGlass.HasActiveBreakGlassAsync(actor, ct);
+        if (!breakGlassActive && string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("SoD: Editor who checked in this version cannot Deploy it.");
         }
 
         var isDeployer = await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Deployer, ct);
         var isApprover = await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Approver, ct);
-        if (!isDeployer && !isApprover)
+        if (!isDeployer && !isApprover && !breakGlassActive)
         {
             throw new UnauthorizedAccessException("Deployer (or Approver in combined mode) role required.");
         }
 
-        if (!isDeployer && isApprover)
+        if (!breakGlassActive && !isDeployer && isApprover)
         {
             var hasSeparateDeployer = await HasAnyDeployerGrantAsync(gpo.ProductionGpoId, ct);
             if (hasSeparateDeployer)
@@ -512,6 +521,8 @@ public sealed class GpoWorkflowService(
                 throw new UnauthorizedAccessException("Separate Deployer role is configured; Approver cannot Deploy.");
             }
         }
+
+        await AuditBreakGlassUseAsync(actor, "Gpo.Deploy", gpo.ProductionGpoId, ct);
 
         var deployResult = await directory.DeployTempToProductionAsync(new DeployAdRequest
         {
@@ -584,16 +595,44 @@ public sealed class GpoWorkflowService(
 
     private async Task EnsureApproverAsync(string actor, ControlledGpo gpo, GpoVersion version, CancellationToken ct)
     {
-        if (string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
+        var breakGlassActive = await breakGlass.HasActiveBreakGlassAsync(actor, ct);
+        if (!breakGlassActive && string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("SoD: Editor who checked in this version cannot Approve/Reject it.");
         }
 
         var isApprover = await delegation.HasObjectRoleAsync(actor, gpo.ProductionGpoId, ObjectRole.Approver, ct);
-        if (!isApprover)
+        if (!isApprover && !breakGlassActive)
         {
             throw new UnauthorizedAccessException("Approver role required.");
         }
+
+        await AuditBreakGlassUseAsync(actor, "Gpo.ApproveOrReject", gpo.ProductionGpoId, ct);
+    }
+
+    private async Task AuditBreakGlassUseAsync(string actor, string workflowAction, string objectKey, CancellationToken ct)
+    {
+        var session = await breakGlass.GetActiveSessionAsync(actor, ct);
+        if (session is null)
+        {
+            return;
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = actor,
+            Action = "BreakGlass.Use",
+            ObjectKey = objectKey,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                session.Id,
+                session.Reason,
+                session.ExpiresAt,
+                workflowAction
+            })
+        }, ct);
     }
 
     private Task<bool> HasAnyDeployerGrantAsync(string productionGpoId, CancellationToken ct)

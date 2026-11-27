@@ -20,6 +20,7 @@ public static class DependencyInjection
         services.AddSingleton<IAuditService, AuditService>();
         services.AddSingleton<IDomainService, DomainService>();
         services.AddSingleton<IDelegationService, DelegationService>();
+        services.AddSingleton<IBreakGlassService, BreakGlassService>();
         services.AddSingleton<IDiffService, DiffService>();
         services.AddSingleton<IGpoWorkflowService, GpoWorkflowService>();
         services.AddSingleton<IContainerWorkflowService, ContainerWorkflowService>();

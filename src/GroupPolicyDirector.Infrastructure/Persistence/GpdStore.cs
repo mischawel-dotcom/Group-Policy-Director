@@ -14,6 +14,7 @@ public sealed class GpdStore
     public List<ContainerVersion> ContainerVersions { get; } = [];
     public List<DelegationGrant> Delegations { get; } = [];
     public List<ProductRoleAssignment> ProductRoles { get; } = [];
+    public List<BreakGlassSession> BreakGlassSessions { get; } = [];
     public List<AdGroupMembershipStub> GroupMemberships { get; } = [];
     public List<AuditEvent> Audit { get; } = [];
     public List<OobDetection> OobDetections { get; } = [];

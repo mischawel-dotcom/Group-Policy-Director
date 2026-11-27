@@ -10,7 +10,23 @@ namespace GroupPolicyDirector.Api.Controllers;
 [Authorize]
 public sealed class DelegationController(IDelegationService delegation) : ControllerBase
 {
-    private string Actor => User.Identity?.Name ?? WindowsAuthPlaceholders.DevProductAdmin;
+    private string Actor
+    {
+        get
+        {
+            if (Request.Headers.TryGetValue(WindowsAuthPlaceholders.ActorHeader, out var overrideActor))
+            {
+                var value = overrideActor.ToString().Trim();
+                if (!string.IsNullOrWhiteSpace(value) &&
+                    WindowsAuthPlaceholders.DemoActors.Contains(value, StringComparer.OrdinalIgnoreCase))
+                {
+                    return value;
+                }
+            }
+
+            return User.Identity?.Name ?? WindowsAuthPlaceholders.DevProductAdmin;
+        }
+    }
 
     [HttpGet("product-roles")]
     public async Task<IActionResult> ListProductRoles(CancellationToken ct) =>
