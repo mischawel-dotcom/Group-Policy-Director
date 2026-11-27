@@ -8,7 +8,7 @@ namespace GroupPolicyDirector.Api.Controllers;
 [ApiController]
 [Route("api/me")]
 [Authorize]
-public sealed class MeController(IDelegationService delegation) : ControllerBase
+public sealed class MeController(IDelegationService delegation, IBreakGlassService breakGlass) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> Get(CancellationToken ct)
@@ -18,6 +18,7 @@ public sealed class MeController(IDelegationService delegation) : ControllerBase
         var identity = ResolveActor();
         var roles = await delegation.ResolveEffectiveRolesAsync(identity, ct);
         var memberships = await delegation.ResolveMembershipPrincipalsAsync(identity, ct);
+        var bg = await breakGlass.GetActiveSessionAsync(identity, ct);
         return Ok(new
         {
             identity,
@@ -27,6 +28,11 @@ public sealed class MeController(IDelegationService delegation) : ControllerBase
                             : WindowsAuthPlaceholders.DevelopmentStubMode),
             effectiveRoles = roles,
             membershipPrincipals = memberships,
+            isAuditor = await delegation.IsAuditorAsync(identity, ct),
+            isProductAdministrator = await delegation.IsProductAdministratorAsync(identity, ct),
+            breakGlassEligible = await delegation.HasBreakGlassEligibilityAsync(identity, ct),
+            breakGlassActive = bg is not null,
+            activeBreakGlassSession = bg,
             demoActors = WindowsAuthPlaceholders.DemoActors
         });
     }

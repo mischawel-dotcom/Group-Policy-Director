@@ -80,6 +80,23 @@ public sealed class ProductRoleAssignment
 }
 
 /// <summary>
+/// Time-bound Break Glass emergency session. Eligibility requires ProductRole.BreakGlass;
+/// activation is audited and expires automatically.
+/// </summary>
+public sealed class BreakGlassSession
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public required string TrusteePrincipal { get; init; }
+    public required string ActivatedBy { get; init; }
+    public DateTimeOffset ActivatedAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset ExpiresAt { get; init; }
+    public required string Reason { get; init; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public string? RevokedBy { get; set; }
+    public bool IsActive => RevokedAt is null && DateTimeOffset.UtcNow < ExpiresAt;
+}
+
+/// <summary>
 /// Stub AD group membership used when not domain-joined. Production expands Windows token groups.
 /// </summary>
 public sealed class AdGroupMembershipStub

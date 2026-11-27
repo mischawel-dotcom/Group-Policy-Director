@@ -16,6 +16,7 @@ public sealed class ContainerWorkflowService(
     GpdStore store,
     IAuditService audit,
     IDelegationService delegation,
+    IBreakGlassService breakGlass,
     IContainerDirectoryService directory,
     IDiffService diff) : IContainerWorkflowService
 {
@@ -37,6 +38,7 @@ public sealed class ContainerWorkflowService(
         CancellationToken ct = default)
     {
         await delegation.EnsureDemoTrusteesSeededAsync(ct);
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
 
         if (string.IsNullOrWhiteSpace(containerKey))
         {
@@ -144,12 +146,15 @@ public sealed class ContainerWorkflowService(
             }
         }
 
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
         if (!await delegation.HasObjectRoleAsync(actor, container.ContainerKey, ObjectRole.Editor, ct) &&
             !await HasOuEditorAsync(actor, container, ct) &&
-            !await delegation.IsProductAdminOrBreakGlassAsync(actor, ct))
+            !await delegation.IsProductAdministratorAsync(actor, ct))
         {
-            throw new UnauthorizedAccessException("Editor (or Product Admin) role required to checkout container.");
+            throw new UnauthorizedAccessException("Editor (or Product Admin / active Break Glass) role required to checkout container.");
         }
+
+        await AuditBreakGlassUseAsync(actor, "Container.Checkout", container.ContainerKey, ct);
 
         lock (store.Sync)
         {
@@ -205,6 +210,7 @@ public sealed class ContainerWorkflowService(
         string actor,
         CancellationToken ct = default)
     {
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
         ControlledContainer container;
         lock (store.Sync)
         {
@@ -242,6 +248,7 @@ public sealed class ContainerWorkflowService(
         string actor,
         CancellationToken ct = default)
     {
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
         if (string.IsNullOrWhiteSpace(comment))
         {
             throw new ArgumentException("Check-in comment is required.", nameof(comment));
@@ -432,7 +439,9 @@ public sealed class ContainerWorkflowService(
                 : JsonSerializer.Deserialize<ContainerLinksState>(version.LinksSnapshotJson!) ?? new ContainerLinksState();
         }
 
-        if (string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
+        var breakGlassActive = await breakGlass.HasActiveBreakGlassAsync(actor, ct);
+        if (!breakGlassActive && string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("SoD: Editor who checked in this version cannot Deploy it.");
         }
@@ -441,10 +450,12 @@ public sealed class ContainerWorkflowService(
                          || await HasOuRoleAsync(actor, container, ObjectRole.Deployer, ct);
         var isApprover = await delegation.HasObjectRoleAsync(actor, container.ContainerKey, ObjectRole.Approver, ct)
                          || await HasOuRoleAsync(actor, container, ObjectRole.Approver, ct);
-        if (!isDeployer && !isApprover)
+        if (!isDeployer && !isApprover && !breakGlassActive)
         {
             throw new UnauthorizedAccessException("Deployer (or Approver in combined mode) role required.");
         }
+
+        await AuditBreakGlassUseAsync(actor, "Container.Deploy", container.ContainerKey, ct);
 
         var deployResult = await directory.DeployLinksAsync(new DeployContainerLinksAdRequest
         {
@@ -530,17 +541,45 @@ public sealed class ContainerWorkflowService(
         ContainerVersion version,
         CancellationToken ct)
     {
-        if (string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
+        await delegation.EnsureNotAuditorOnlyAsync(actor, ct);
+        var breakGlassActive = await breakGlass.HasActiveBreakGlassAsync(actor, ct);
+        if (!breakGlassActive && string.Equals(version.CreatedBy, actor, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("SoD: Editor who checked in this version cannot Approve/Reject it.");
         }
 
         var isApprover = await delegation.HasObjectRoleAsync(actor, container.ContainerKey, ObjectRole.Approver, ct)
                          || await HasOuRoleAsync(actor, container, ObjectRole.Approver, ct);
-        if (!isApprover)
+        if (!isApprover && !breakGlassActive)
         {
             throw new UnauthorizedAccessException("Approver role required.");
         }
+
+        await AuditBreakGlassUseAsync(actor, "Container.ApproveOrReject", container.ContainerKey, ct);
+    }
+
+    private async Task AuditBreakGlassUseAsync(string actor, string workflowAction, string objectKey, CancellationToken ct)
+    {
+        var session = await breakGlass.GetActiveSessionAsync(actor, ct);
+        if (session is null)
+        {
+            return;
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = actor,
+            Action = "BreakGlass.Use",
+            ObjectKey = objectKey,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                session.Id,
+                session.Reason,
+                session.ExpiresAt,
+                workflowAction
+            })
+        }, ct);
     }
 
     private Task<bool> HasOuEditorAsync(string actor, ControlledContainer container, CancellationToken ct) =>

@@ -9,6 +9,7 @@ namespace GroupPolicyDirector.Infrastructure.Services;
 /// <summary>
 /// Referenz-Tools-like delegation: Product Admin assigns OU/GPO object roles to AD admin groups.
 /// Group membership evaluation at login uses stubs when not domain-joined.
+/// Active Break Glass sessions are read from the store (time-bound SoD bypass).
 /// </summary>
 public sealed class DelegationService(GpdStore store, IAuditService audit) : IDelegationService
 {
@@ -35,7 +36,8 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         CancellationToken ct = default)
     {
         EnsureBootstrap();
-        if (!await IsProductAdminOrBreakGlassAsync(grantedBy, ct))
+        await EnsureNotAuditorOnlyAsync(grantedBy, ct);
+        if (!await IsProductAdministratorAsync(grantedBy, ct))
         {
             throw new InvalidOperationException("Only Product Administrator may grant product roles.");
         }
@@ -67,7 +69,8 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
     public async Task<bool> RevokeProductRoleAsync(Guid assignmentId, string revokedBy, CancellationToken ct = default)
     {
         EnsureBootstrap();
-        if (!await IsProductAdminOrBreakGlassAsync(revokedBy, ct))
+        await EnsureNotAuditorOnlyAsync(revokedBy, ct);
+        if (!await IsProductAdministratorAsync(revokedBy, ct))
         {
             throw new InvalidOperationException("Only Product Administrator may revoke product roles.");
         }
@@ -116,7 +119,8 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         CancellationToken ct = default)
     {
         EnsureBootstrap();
-        if (!await IsProductAdminOrBreakGlassAsync(grantedBy, ct))
+        await EnsureNotAuditorOnlyAsync(grantedBy, ct);
+        if (!await IsProductAdministratorAsync(grantedBy, ct))
         {
             throw new InvalidOperationException("Only Product Administrator may grant OU/GPO object roles.");
         }
@@ -172,7 +176,8 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
     public async Task<bool> RevokeObjectRoleAsync(Guid grantId, string revokedBy, CancellationToken ct = default)
     {
         EnsureBootstrap();
-        if (!await IsProductAdminOrBreakGlassAsync(revokedBy, ct))
+        await EnsureNotAuditorOnlyAsync(revokedBy, ct);
+        if (!await IsProductAdministratorAsync(revokedBy, ct))
         {
             throw new InvalidOperationException("Only Product Administrator may revoke OU/GPO object roles.");
         }
@@ -235,6 +240,18 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
                 Principal = WindowsAuthPlaceholders.DeployersGroup,
                 Kind = "Group",
                 Description = "Deployers — Deploy to production"
+            },
+            new SuggestedTrustee
+            {
+                Principal = WindowsAuthPlaceholders.BreakGlassGroup,
+                Kind = "Group",
+                Description = "Break Glass — time-bound emergency SoD bypass (activation required)"
+            },
+            new SuggestedTrustee
+            {
+                Principal = WindowsAuthPlaceholders.AuditorsGroup,
+                Kind = "Group",
+                Description = "Auditors — read-only objects / diffs / audit"
             },
             new SuggestedTrustee
             {
@@ -356,12 +373,56 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         }
     }
 
-    public async Task<bool> IsProductAdminOrBreakGlassAsync(string windowsIdentity, CancellationToken ct = default)
+    public async Task<bool> IsProductAdministratorAsync(string windowsIdentity, CancellationToken ct = default)
     {
         var roles = await ResolveEffectiveRolesAsync(windowsIdentity, ct);
-        return roles.Any(r =>
-            r.Equals("Product:ProductAdministrator", StringComparison.OrdinalIgnoreCase) ||
-            r.Equals("Product:BreakGlass", StringComparison.OrdinalIgnoreCase));
+        return roles.Any(r => r.Equals("Product:ProductAdministrator", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public async Task<bool> IsAuditorAsync(string windowsIdentity, CancellationToken ct = default)
+    {
+        var roles = await ResolveEffectiveRolesAsync(windowsIdentity, ct);
+        return roles.Any(r => r.Equals("Product:Auditor", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public async Task<bool> HasBreakGlassEligibilityAsync(string windowsIdentity, CancellationToken ct = default)
+    {
+        var roles = await ResolveEffectiveRolesAsync(windowsIdentity, ct);
+        return roles.Any(r => r.Equals("Product:BreakGlass", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public async Task<bool> IsProductAdminOrBreakGlassAsync(string windowsIdentity, CancellationToken ct = default)
+    {
+        if (await IsProductAdministratorAsync(windowsIdentity, ct))
+        {
+            return true;
+        }
+
+        return await HasActiveBreakGlassSessionAsync(windowsIdentity, ct);
+    }
+
+    public async Task EnsureNotAuditorOnlyAsync(string windowsIdentity, CancellationToken ct = default)
+    {
+        if (!await IsAuditorAsync(windowsIdentity, ct))
+        {
+            return;
+        }
+
+        if (await IsProductAdministratorAsync(windowsIdentity, ct) ||
+            await HasActiveBreakGlassSessionAsync(windowsIdentity, ct))
+        {
+            return;
+        }
+
+        // Auditor with any object role may still perform that role's mutations;
+        // Auditor-only (product role alone) is read-only.
+        var roles = await ResolveEffectiveRolesAsync(windowsIdentity, ct);
+        if (roles.Any(r => r.StartsWith("Object:", StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        throw new UnauthorizedAccessException("Auditor is read-only across objects, diffs, and audit.");
     }
 
     public async Task<bool> HasObjectRoleAsync(
@@ -371,7 +432,14 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         CancellationToken ct = default)
     {
         EnsureBootstrap();
-        if (await IsProductAdminOrBreakGlassAsync(windowsIdentity, ct) && role == ObjectRole.Editor)
+
+        if (await HasActiveBreakGlassSessionAsync(windowsIdentity, ct))
+        {
+            // Active Break Glass bypasses all object-role checks (emergency SoD bypass).
+            return true;
+        }
+
+        if (await IsProductAdministratorAsync(windowsIdentity, ct) && role == ObjectRole.Editor)
         {
             // Product Admin may edit for bootstrap demos, but SoD still blocks self-approve/deploy.
             return true;
@@ -391,6 +459,19 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         }
     }
 
+    private async Task<bool> HasActiveBreakGlassSessionAsync(string windowsIdentity, CancellationToken ct)
+    {
+        var principals = await ResolveMembershipPrincipalsAsync(windowsIdentity, ct);
+        lock (store.Sync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            return store.BreakGlassSessions.Any(s =>
+                s.RevokedAt is null &&
+                s.ExpiresAt > now &&
+                principals.Any(p => p.Equals(s.TrusteePrincipal, StringComparison.OrdinalIgnoreCase)));
+        }
+    }
+
     private void EnsureBootstrap()
     {
         lock (store.Sync)
@@ -401,6 +482,18 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
                 {
                     Role = ProductRole.ProductAdministrator,
                     TrusteePrincipal = WindowsAuthPlaceholders.ProductAdminsGroup,
+                    GrantedBy = "bootstrap"
+                });
+                store.ProductRoles.Add(new ProductRoleAssignment
+                {
+                    Role = ProductRole.BreakGlass,
+                    TrusteePrincipal = WindowsAuthPlaceholders.BreakGlassGroup,
+                    GrantedBy = "bootstrap"
+                });
+                store.ProductRoles.Add(new ProductRoleAssignment
+                {
+                    Role = ProductRole.Auditor,
+                    TrusteePrincipal = WindowsAuthPlaceholders.AuditorsGroup,
                     GrantedBy = "bootstrap"
                 });
             }
@@ -428,6 +521,16 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
                     {
                         UserPrincipal = WindowsAuthPlaceholders.DevDeployer,
                         GroupPrincipal = WindowsAuthPlaceholders.DeployersGroup
+                    },
+                    new AdGroupMembershipStub
+                    {
+                        UserPrincipal = WindowsAuthPlaceholders.DevBreakGlass,
+                        GroupPrincipal = WindowsAuthPlaceholders.BreakGlassGroup
+                    },
+                    new AdGroupMembershipStub
+                    {
+                        UserPrincipal = WindowsAuthPlaceholders.DevAuditor,
+                        GroupPrincipal = WindowsAuthPlaceholders.AuditorsGroup
                     }
                 ]);
             }

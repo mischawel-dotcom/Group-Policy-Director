@@ -13,8 +13,20 @@ public interface IOobDetectionService
     Task<OobDetection?> ResolveAtCheckoutAsync(Guid controlledGpoId, string resolution, string actor, CancellationToken ct = default);
 }
 
+public sealed class AuditQuery
+{
+    public string? ObjectKey { get; init; }
+    public string? Actor { get; init; }
+    public string? Action { get; init; }
+    public DateTimeOffset? From { get; init; }
+    public DateTimeOffset? To { get; init; }
+    public int Take { get; init; } = 200;
+}
+
 public interface IAuditService
 {
     Task WriteAsync(AuditEvent evt, CancellationToken ct = default);
     Task<IReadOnlyList<AuditEvent>> ListAsync(int take = 100, CancellationToken ct = default);
+    Task<IReadOnlyList<AuditEvent>> QueryAsync(AuditQuery query, CancellationToken ct = default);
+    Task<string> ExportCsvAsync(AuditQuery query, CancellationToken ct = default);
 }

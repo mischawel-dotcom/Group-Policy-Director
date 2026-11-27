@@ -10,11 +10,15 @@ public static class WindowsAuthPlaceholders
     public const string DevEditor = @"CONTOSO\gpd-editor";
     public const string DevApprover = @"CONTOSO\gpd-approver";
     public const string DevDeployer = @"CONTOSO\gpd-deployer";
+    public const string DevBreakGlass = @"CONTOSO\gpd-breakglass";
+    public const string DevAuditor = @"CONTOSO\gpd-auditor";
 
     public const string EditorsGroup = @"CONTOSO\GPD-Editors";
     public const string ApproversGroup = @"CONTOSO\GPD-Approvers";
     public const string DeployersGroup = @"CONTOSO\GPD-Deployers";
     public const string ProductAdminsGroup = @"CONTOSO\GPD-ProductAdmins";
+    public const string BreakGlassGroup = @"CONTOSO\GPD-BreakGlass";
+    public const string AuditorsGroup = @"CONTOSO\GPD-Auditors";
 
     public const string AuthModeClaim = "gpd_auth_mode";
     public const string DevelopmentStubMode = "development-stub";
@@ -28,6 +32,8 @@ public static class WindowsAuthPlaceholders
         DevProductAdmin,
         DevEditor,
         DevApprover,
-        DevDeployer
+        DevDeployer,
+        DevBreakGlass,
+        DevAuditor
     ];
 }

@@ -3,11 +3,38 @@ import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
+type BreakGlassSession = {
+  id: string
+  trusteePrincipal: string
+  activatedBy: string
+  activatedAt: string
+  expiresAt: string
+  reason: string
+  revokedAt?: string
+  revokedBy?: string
+  isActive?: boolean
+}
+
+type AuditEvent = {
+  id: string
+  occurredAt: string
+  actor: string
+  action: string
+  objectKey?: string
+  outcome?: string
+  detailJson?: string
+}
+
 type Me = {
   identity: string
   authMode: string
   effectiveRoles: string[]
   membershipPrincipals?: string[]
+  isAuditor?: boolean
+  isProductAdministrator?: boolean
+  breakGlassEligible?: boolean
+  breakGlassActive?: boolean
+  activeBreakGlassSession?: BreakGlassSession | null
   demoActors?: string[]
 }
 
@@ -411,22 +438,50 @@ export default function App() {
   const [delInherit, setDelInherit] = useState(true)
   const [prodRole, setProdRole] = useState(2)
   const [prodTrustee, setProdTrustee] = useState('CONTOSO\\GPD-ProductAdmins')
+  const [bgSessions, setBgSessions] = useState<BreakGlassSession[]>([])
+  const [bgTrustee, setBgTrustee] = useState('CONTOSO\\GPD-BreakGlass')
+  const [bgReason, setBgReason] = useState('Emergency SoD bypass for production incident')
+  const [bgMinutes, setBgMinutes] = useState(60)
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
+  const [auditObject, setAuditObject] = useState('')
+  const [auditActor, setAuditActor] = useState('')
+  const [auditAction, setAuditAction] = useState('')
+  const [auditFrom, setAuditFrom] = useState('')
+  const [auditTo, setAuditTo] = useState('')
   const [message, setMessage] = useState<string>('')
   const [error, setError] = useState<string>('')
   const [pendingEdits, setPendingEdits] = useState<Record<string, { state?: string; value?: string }>>({})
 
   const refreshDelegation = useCallback(async () => {
-    const [pr, oroles, sug, hints] = await Promise.all([
+    const [pr, oroles, sug, hints, sessions] = await Promise.all([
       api<ProductRoleAssignment[]>('/api/delegation/product-roles', undefined, actor),
       api<DelegationGrant[]>('/api/delegation/object-roles', undefined, actor),
       api<SuggestedTrustee[]>('/api/delegation/suggested-trustees', undefined, actor),
       api<ScopeHint[]>('/api/delegation/scope-hints', undefined, actor),
+      api<BreakGlassSession[]>('/api/break-glass', undefined, actor),
     ])
     setProductRoles(pr)
     setObjectRoles(oroles)
     setTrustees(sug)
     setScopeHints(hints)
+    setBgSessions(sessions)
   }, [actor])
+
+  const buildAuditQuery = useCallback(() => {
+    const q = new URLSearchParams()
+    if (auditObject.trim()) q.set('objectKey', auditObject.trim())
+    if (auditActor.trim()) q.set('actor', auditActor.trim())
+    if (auditAction.trim()) q.set('action', auditAction.trim())
+    if (auditFrom) q.set('from', new Date(auditFrom).toISOString())
+    if (auditTo) q.set('to', new Date(auditTo).toISOString())
+    q.set('take', '500')
+    return q.toString()
+  }, [auditObject, auditActor, auditAction, auditFrom, auditTo])
+
+  const refreshAudit = useCallback(async () => {
+    const items = await api<AuditEvent[]>(`/api/audit?${buildAuditQuery()}`, undefined, actor)
+    setAuditEvents(items)
+  }, [actor, buildAuditQuery])
 
   const refresh = useCallback(async () => {
     setError('')
@@ -461,6 +516,11 @@ export default function App() {
         setSelectedContainer(c.find((x) => x.id === selectedContainerId) ?? null)
       }
       await refreshDelegation()
+      try {
+        await refreshAudit()
+      } catch {
+        // Audit may be empty or briefly unavailable during bootstrap.
+      }
       const fixture = await api<{ available: boolean; path?: string }>('/api/agpm/fixture', undefined, actor)
       if (fixture.available && fixture.path) {
         setAgpmPath((prev) => prev || fixture.path || '')
@@ -468,7 +528,7 @@ export default function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [actor, selectedId, selectedContainerId, refreshDelegation])
+  }, [actor, selectedId, selectedContainerId, refreshDelegation, refreshAudit])
 
   useEffect(() => {
     void refresh()
@@ -1046,6 +1106,61 @@ export default function App() {
     }
   }
 
+  async function activateBreakGlass() {
+    setError('')
+    try {
+      const session = await api<BreakGlassSession>('/api/break-glass/activate', {
+        method: 'POST',
+        body: JSON.stringify({
+          trusteePrincipal: bgTrustee,
+          reason: bgReason,
+          durationMinutes: bgMinutes,
+        }),
+      }, actor)
+      setMessage(`Break Glass active until ${new Date(session.expiresAt).toLocaleString()} for ${session.trusteePrincipal}.`)
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function revokeBreakGlass(id: string) {
+    setError('')
+    try {
+      await api(`/api/break-glass/${id}/revoke`, { method: 'POST' }, actor)
+      setMessage('Break Glass session revoked.')
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function exportAuditCsv() {
+    setError('')
+    try {
+      const headers: Record<string, string> = {}
+      if (actor) headers['X-Gpd-Actor'] = actor
+      const res = await fetch(`${API_BASE}/api/audit/export?${buildAuditQuery()}`, {
+        credentials: 'include',
+        headers,
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error((body as { error?: string }).error ?? `${res.status} ${res.statusText}`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `gpd-audit-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+      setMessage('Audit CSV exported.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const canEditTree = selected?.status === 2 && selected.checkedOutBy?.toLowerCase() === actor.toLowerCase()
   const canEditLinks =
     selectedContainer?.status === 2 &&
@@ -1055,6 +1170,8 @@ export default function App() {
     'CONTOSO\\gpd-editor',
     'CONTOSO\\gpd-approver',
     'CONTOSO\\gpd-deployer',
+    'CONTOSO\\gpd-breakglass',
+    'CONTOSO\\gpd-auditor',
   ]
 
   return (
@@ -1063,11 +1180,13 @@ export default function App() {
         <p className="brand">Group Policy Director</p>
         <h1>Take Control → Checkout → Approve → Deploy</h1>
         <p className="lede">
-          Slice 5 — AD Container-Links (OU/Site/Domain gpLink), History/Diff, SMTP-Polish für OOB. Branding bleibt Referenz-Tools.
+          Slice 6 — Break Glass (zeitgebunden), Auditor (read-only), Audit-Log Filter/CSV. Branding bleibt Referenz-Tools. Kein Intune.
         </p>
         {me ? (
           <p className="identity">
             {me.identity} · {me.authMode}
+            {me.isAuditor ? ' · Auditor' : ''}
+            {me.breakGlassActive ? ' · Break Glass ACTIVE' : me.breakGlassEligible ? ' · Break Glass eligible' : ''}
           </p>
         ) : null}
         <div className="actor-switch">
@@ -1313,6 +1432,129 @@ export default function App() {
               </li>
             ))}
           </ul>
+        </section>
+
+        <section className="panel breakglass-panel">
+          <h2>Break Glass (Notfall)</h2>
+          <p className="muted">
+            Product Admin aktiviert eine zeitgebundene Session für einen Break-Glass-Trustee. Aktive Session bypassed Objekt-SoD (Checkout/Approve/Deploy) und wird auditiert. Kein dauerhafter Admin.
+          </p>
+          <div className="row">
+            <label>
+              Trustee
+              <input
+                list="trustee-hints"
+                value={bgTrustee}
+                onChange={(e) => setBgTrustee(e.target.value)}
+              />
+            </label>
+            <label>
+              Dauer (Min.)
+              <input
+                type="number"
+                min={1}
+                max={480}
+                value={bgMinutes}
+                onChange={(e) => setBgMinutes(Number(e.target.value) || 60)}
+              />
+            </label>
+            <label className="grow">
+              Reason
+              <input value={bgReason} onChange={(e) => setBgReason(e.target.value)} />
+            </label>
+            <button type="button" onClick={() => void activateBreakGlass()}>
+              Activate
+            </button>
+          </div>
+          <ul className="delegation-list">
+            {bgSessions.map((s) => {
+              const active = !s.revokedAt && new Date(s.expiresAt).getTime() > Date.now()
+              return (
+                <li key={s.id}>
+                  <span>
+                    <strong>{active ? 'ACTIVE' : s.revokedAt ? 'Revoked' : 'Expired'}</strong>
+                    {' · '}
+                    {s.trusteePrincipal}
+                    <span className="muted">
+                      {' · '}until {new Date(s.expiresAt).toLocaleString()}
+                      {' · '}by {s.activatedBy}
+                      {' · '}{s.reason}
+                    </span>
+                  </span>
+                  {active ? (
+                    <button type="button" className="secondary" onClick={() => void revokeBreakGlass(s.id)}>
+                      Revoke
+                    </button>
+                  ) : null}
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+
+        <section className="panel audit-panel">
+          <h2>Audit Log</h2>
+          <p className="muted">
+            Filter nach Objekt, Akteur, Aktion und Zeitraum. CSV-Export für Compliance. Auditor ist read-only.
+          </p>
+          <div className="row">
+            <label>
+              Object
+              <input value={auditObject} onChange={(e) => setAuditObject(e.target.value)} placeholder="GPO GUID / DN" />
+            </label>
+            <label>
+              Actor
+              <input value={auditActor} onChange={(e) => setAuditActor(e.target.value)} placeholder="CONTOSO\…" />
+            </label>
+            <label>
+              Action
+              <input value={auditAction} onChange={(e) => setAuditAction(e.target.value)} placeholder="BreakGlass / Gpo." />
+            </label>
+            <label>
+              From
+              <input type="datetime-local" value={auditFrom} onChange={(e) => setAuditFrom(e.target.value)} />
+            </label>
+            <label>
+              To
+              <input type="datetime-local" value={auditTo} onChange={(e) => setAuditTo(e.target.value)} />
+            </label>
+            <button type="button" onClick={() => void refreshAudit().then(() => setMessage('Audit refreshed.')).catch((e) => setError(e instanceof Error ? e.message : String(e)))}>
+              Filtern
+            </button>
+            <button type="button" className="secondary" onClick={() => void exportAuditCsv()}>
+              Export CSV
+            </button>
+          </div>
+          <div className="audit-table-wrap">
+            <table className="audit-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Actor</th>
+                  <th>Action</th>
+                  <th>Object</th>
+                  <th>Outcome</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditEvents.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="muted">Keine Events (Filter anpassen oder Workflow ausführen).</td>
+                  </tr>
+                ) : (
+                  auditEvents.map((e) => (
+                    <tr key={e.id} title={e.detailJson ?? ''}>
+                      <td>{new Date(e.occurredAt).toLocaleString()}</td>
+                      <td>{e.actor}</td>
+                      <td>{e.action}</td>
+                      <td>{e.objectKey ?? '—'}</td>
+                      <td>{e.outcome ?? '—'}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section className="panel workflow-panel">
