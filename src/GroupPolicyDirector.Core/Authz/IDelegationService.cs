@@ -6,6 +6,7 @@ public interface IDelegationService
 {
     Task<IReadOnlyList<ProductRoleAssignment>> ListProductRolesAsync(CancellationToken ct = default);
     Task<ProductRoleAssignment> GrantProductRoleAsync(ProductRole role, string trusteePrincipal, string grantedBy, CancellationToken ct = default);
+    Task<bool> RevokeProductRoleAsync(Guid assignmentId, string revokedBy, CancellationToken ct = default);
     Task<IReadOnlyList<DelegationGrant>> ListObjectDelegationsAsync(CancellationToken ct = default);
     Task<DelegationGrant> GrantObjectRoleAsync(
         DelegationScopeKind scopeKind,
@@ -15,6 +16,11 @@ public interface IDelegationService
         string grantedBy,
         bool inheritToChildren = true,
         CancellationToken ct = default);
+    Task<bool> RevokeObjectRoleAsync(Guid grantId, string revokedBy, CancellationToken ct = default);
+    /// <summary>Suggested AD admin-role groups for trustees (dev stubs + known GPD groups).</summary>
+    Task<IReadOnlyList<SuggestedTrustee>> ListSuggestedTrusteesAsync(CancellationToken ct = default);
+    /// <summary>Known OU / container scopes for the admin UI (stub catalog).</summary>
+    Task<IReadOnlyList<DelegationScopeHint>> ListScopeHintsAsync(CancellationToken ct = default);
     Task<IReadOnlyList<string>> ResolveEffectiveRolesAsync(string windowsIdentity, CancellationToken ct = default);
     /// <summary>Resolved principals for the identity (self + AD group stubs).</summary>
     Task<IReadOnlyList<string>> ResolveMembershipPrincipalsAsync(string windowsIdentity, CancellationToken ct = default);
@@ -23,4 +29,18 @@ public interface IDelegationService
     /// <summary>True if actor is Product Administrator or Break Glass.</summary>
     Task<bool> IsProductAdminOrBreakGlassAsync(string windowsIdentity, CancellationToken ct = default);
     Task EnsureDemoTrusteesSeededAsync(CancellationToken ct = default);
+}
+
+public sealed class SuggestedTrustee
+{
+    public required string Principal { get; init; }
+    public required string Kind { get; init; } // Group | User
+    public string? Description { get; init; }
+}
+
+public sealed class DelegationScopeHint
+{
+    public required DelegationScopeKind ScopeKind { get; init; }
+    public required string ScopeKey { get; init; }
+    public string? Label { get; init; }
 }

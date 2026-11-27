@@ -16,7 +16,7 @@ public sealed class HealthController(IGpoDirectoryService directory) : Controlle
         return Ok(new
         {
             product = "Group Policy Director",
-            slice = 3,
+            slice = 4,
             status = "Healthy",
             utc = DateTimeOffset.UtcNow,
             ad = new

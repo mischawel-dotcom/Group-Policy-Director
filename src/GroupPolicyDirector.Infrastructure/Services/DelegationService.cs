@@ -35,6 +35,11 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         CancellationToken ct = default)
     {
         EnsureBootstrap();
+        if (!await IsProductAdminOrBreakGlassAsync(grantedBy, ct))
+        {
+            throw new InvalidOperationException("Only Product Administrator may grant product roles.");
+        }
+
         var assignment = new ProductRoleAssignment
         {
             Role = role,
@@ -59,6 +64,38 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         return assignment;
     }
 
+    public async Task<bool> RevokeProductRoleAsync(Guid assignmentId, string revokedBy, CancellationToken ct = default)
+    {
+        EnsureBootstrap();
+        if (!await IsProductAdminOrBreakGlassAsync(revokedBy, ct))
+        {
+            throw new InvalidOperationException("Only Product Administrator may revoke product roles.");
+        }
+
+        ProductRoleAssignment? removed;
+        lock (store.Sync)
+        {
+            removed = store.ProductRoles.FirstOrDefault(p => p.Id == assignmentId);
+            if (removed is null)
+            {
+                return false;
+            }
+
+            store.ProductRoles.Remove(removed);
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = revokedBy,
+            Action = "Authz.RevokeProductRole",
+            ObjectKey = removed.TrusteePrincipal,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new { removed.Role, assignmentId })
+        }, ct);
+
+        return true;
+    }
+
     public Task<IReadOnlyList<DelegationGrant>> ListObjectDelegationsAsync(CancellationToken ct = default)
     {
         EnsureBootstrap();
@@ -79,6 +116,10 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         CancellationToken ct = default)
     {
         EnsureBootstrap();
+        if (!await IsProductAdminOrBreakGlassAsync(grantedBy, ct))
+        {
+            throw new InvalidOperationException("Only Product Administrator may grant OU/GPO object roles.");
+        }
 
         // SoD: Editor ≠ Approver/Deployer on same object for the same trustee.
         lock (store.Sync)
@@ -126,6 +167,119 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
         }, ct);
 
         return grant;
+    }
+
+    public async Task<bool> RevokeObjectRoleAsync(Guid grantId, string revokedBy, CancellationToken ct = default)
+    {
+        EnsureBootstrap();
+        if (!await IsProductAdminOrBreakGlassAsync(revokedBy, ct))
+        {
+            throw new InvalidOperationException("Only Product Administrator may revoke OU/GPO object roles.");
+        }
+
+        DelegationGrant? removed;
+        lock (store.Sync)
+        {
+            removed = store.Delegations.FirstOrDefault(d => d.Id == grantId);
+            if (removed is null)
+            {
+                return false;
+            }
+
+            store.Delegations.Remove(removed);
+        }
+
+        await audit.WriteAsync(new AuditEvent
+        {
+            Actor = revokedBy,
+            Action = "Authz.RevokeObjectRole",
+            ObjectKey = removed.ScopeKey,
+            Outcome = "Success",
+            DetailJson = JsonSerializer.Serialize(new
+            {
+                removed.ScopeKind,
+                removed.Role,
+                removed.TrusteePrincipal,
+                grantId
+            })
+        }, ct);
+
+        return true;
+    }
+
+    public Task<IReadOnlyList<SuggestedTrustee>> ListSuggestedTrusteesAsync(CancellationToken ct = default)
+    {
+        EnsureBootstrap();
+        IReadOnlyList<SuggestedTrustee> items =
+        [
+            new SuggestedTrustee
+            {
+                Principal = WindowsAuthPlaceholders.ProductAdminsGroup,
+                Kind = "Group",
+                Description = "Product Administrators (AD admin-role group)"
+            },
+            new SuggestedTrustee
+            {
+                Principal = WindowsAuthPlaceholders.EditorsGroup,
+                Kind = "Group",
+                Description = "Editors — Checkout/Edit/Check-in"
+            },
+            new SuggestedTrustee
+            {
+                Principal = WindowsAuthPlaceholders.ApproversGroup,
+                Kind = "Group",
+                Description = "Approvers — Approve/Reject"
+            },
+            new SuggestedTrustee
+            {
+                Principal = WindowsAuthPlaceholders.DeployersGroup,
+                Kind = "Group",
+                Description = "Deployers — Deploy to production"
+            },
+            new SuggestedTrustee
+            {
+                Principal = @"CONTOSO\Domain Admins",
+                Kind = "Group",
+                Description = "Example existing AD admin-role group (optional trustee)"
+            }
+        ];
+        return Task.FromResult(items);
+    }
+
+    public Task<IReadOnlyList<DelegationScopeHint>> ListScopeHintsAsync(CancellationToken ct = default)
+    {
+        EnsureBootstrap();
+        lock (store.Sync)
+        {
+            var hints = new List<DelegationScopeHint>
+            {
+                new()
+                {
+                    ScopeKind = DelegationScopeKind.Ou,
+                    ScopeKey = "OU=Workstations,DC=contoso,DC=local",
+                    Label = "Workstations OU"
+                },
+                new()
+                {
+                    ScopeKind = DelegationScopeKind.Ou,
+                    ScopeKey = "OU=Servers,DC=contoso,DC=local",
+                    Label = "Servers OU"
+                }
+            };
+
+            foreach (var gpo in store.Gpos)
+            {
+                hints.Add(new DelegationScopeHint
+                {
+                    ScopeKind = DelegationScopeKind.Gpo,
+                    ScopeKey = gpo.ProductionGpoId,
+                    Label = gpo.DisplayName
+                });
+            }
+
+            IReadOnlyList<DelegationScopeHint> result = hints;
+            return Task.FromResult(result);
+        }
     }
 
     public async Task<IReadOnlyList<string>> ResolveMembershipPrincipalsAsync(string windowsIdentity, CancellationToken ct = default)
