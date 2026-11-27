@@ -27,5 +27,7 @@ public enum ObjectRole
 public enum DelegationScopeKind
 {
     Ou = 1,
-    Gpo = 2
+    Gpo = 2,
+    /// <summary>AD Site / Domain / OU container under link change-control.</summary>
+    Container = 3
 }

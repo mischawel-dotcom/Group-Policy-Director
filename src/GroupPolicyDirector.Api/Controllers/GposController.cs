@@ -9,7 +9,7 @@ namespace GroupPolicyDirector.Api.Controllers;
 [ApiController]
 [Route("api/gpos")]
 [Authorize]
-public sealed class GposController(IGpoWorkflowService workflow) : ControllerBase
+public sealed class GposController(IGpoWorkflowService workflow, IDiffService diff) : ControllerBase
 {
     private string Actor
     {
@@ -186,4 +186,17 @@ public sealed class GposController(IGpoWorkflowService workflow) : ControllerBas
     [HttpGet("{id:guid}/history")]
     public async Task<IActionResult> History(Guid id, CancellationToken ct) =>
         Ok(await workflow.GetHistoryAsync(id, ct));
+
+    [HttpGet("{id:guid}/diff")]
+    public async Task<IActionResult> Diff(Guid id, [FromQuery] int from, [FromQuery] int to, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await diff.DiffGpoVersionsAsync(id, from, to, ct));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
+        }
+    }
 }

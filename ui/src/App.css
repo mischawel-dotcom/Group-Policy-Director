@@ -356,6 +356,112 @@ footer {
   font-size: 0.85rem;
 }
 
+.history-pick {
+  background: transparent;
+  color: var(--ink);
+  border: none;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  font-weight: 600;
+}
+
+.history-pick:hover {
+  color: var(--accent);
+  filter: none;
+}
+
+.diff-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--line);
+}
+
+.diff-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.diff-list li {
+  margin-bottom: 0.55rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.88rem;
+}
+
+.diff-values {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.2rem;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.8rem;
+}
+
+.diff-values .before {
+  color: var(--warn);
+}
+
+.diff-values .after {
+  color: var(--ok);
+}
+
+.diff-added strong {
+  color: var(--ok);
+}
+
+.diff-removed strong {
+  color: var(--warn);
+}
+
+.links-editor,
+.container-history {
+  margin-top: 1rem;
+}
+
+.links-editor h3,
+.container-history h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.links-list {
+  list-style: none;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0;
+}
+
+.links-list li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.link-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 14rem;
+  flex: 1;
+}
+
+.link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.link-actions button {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.8rem;
+}
+
 @media (min-width: 900px) {
   .layout {
     grid-template-columns: 1fr 1fr;
@@ -364,7 +470,8 @@ footer {
   .settings-panel,
   .workflow-panel,
   .delegation-panel,
-  .agpm-panel {
+  .agpm-panel,
+  .history-panel {
     grid-column: 1 / -1;
   }
 }

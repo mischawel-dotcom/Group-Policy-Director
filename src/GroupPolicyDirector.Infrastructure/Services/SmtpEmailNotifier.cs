@@ -1,25 +1,23 @@
 using System.Net;
 using System.Net.Mail;
 using GroupPolicyDirector.Core.Notifications;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace GroupPolicyDirector.Infrastructure.Services;
 
 /// <summary>
-/// Configurable SMTP notifier. When Smtp:Host is empty, logs only (safe offline).
-/// When Host is set, sends via System.Net.Mail.SmtpClient.
+/// Configurable SMTP notifier. Uses runtime settings overlay when present.
+/// Empty Host → log-only (safe offline). No OOB auto-reset.
 /// </summary>
-public sealed class SmtpEmailNotifier(IConfiguration config, ILogger<SmtpEmailNotifier> logger) : IEmailNotifier
+public sealed class SmtpEmailNotifier(
+    ISmtpSettingsService smtpSettings,
+    ILogger<SmtpEmailNotifier> logger) : IEmailNotifier
 {
     public async Task SendAsync(EmailMessage message, CancellationToken ct = default)
     {
-        var host = config["Smtp:Host"];
-        var from = config["Smtp:From"] ?? "gpd-noreply@localhost";
-        var port = config.GetValue("Smtp:Port", 25);
-        var useSsl = config.GetValue("Smtp:UseSsl", false);
-        var user = config["Smtp:User"];
-        var password = config["Smtp:Password"];
+        var cfg = smtpSettings.GetRuntime();
+        var host = cfg.Host;
+        var from = string.IsNullOrWhiteSpace(cfg.From) ? "gpd-noreply@localhost" : cfg.From;
 
         if (string.IsNullOrWhiteSpace(host))
         {
@@ -31,20 +29,20 @@ public sealed class SmtpEmailNotifier(IConfiguration config, ILogger<SmtpEmailNo
             return;
         }
 
-        using var client = new SmtpClient(host, port)
+        using var client = new SmtpClient(host, cfg.Port)
         {
-            EnableSsl = useSsl,
+            EnableSsl = cfg.UseSsl,
             DeliveryMethod = SmtpDeliveryMethod.Network,
             Timeout = 30_000
         };
 
-        if (!string.IsNullOrWhiteSpace(user))
+        if (!string.IsNullOrWhiteSpace(cfg.User))
         {
-            client.Credentials = new NetworkCredential(user, password ?? "");
+            client.Credentials = new NetworkCredential(cfg.User, cfg.Password ?? "");
         }
         else
         {
-            client.UseDefaultCredentials = config.GetValue("Smtp:UseDefaultCredentials", false);
+            client.UseDefaultCredentials = cfg.UseDefaultCredentials;
         }
 
         using var mail = new MailMessage
@@ -70,7 +68,7 @@ public sealed class SmtpEmailNotifier(IConfiguration config, ILogger<SmtpEmailNo
         logger.LogInformation(
             "SMTP sent via {Host}:{Port} To={To} Subject={Subject}",
             host,
-            port,
+            cfg.Port,
             string.Join(",", message.To),
             message.Subject);
     }

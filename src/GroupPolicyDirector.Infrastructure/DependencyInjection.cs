@@ -20,9 +20,12 @@ public static class DependencyInjection
         services.AddSingleton<IAuditService, AuditService>();
         services.AddSingleton<IDomainService, DomainService>();
         services.AddSingleton<IDelegationService, DelegationService>();
+        services.AddSingleton<IDiffService, DiffService>();
         services.AddSingleton<IGpoWorkflowService, GpoWorkflowService>();
+        services.AddSingleton<IContainerWorkflowService, ContainerWorkflowService>();
         services.AddSingleton<IOobDetectionService, OobDetectionService>();
         services.AddSingleton<IAgpmImportService, AgpmImportDryRunService>();
+        services.AddSingleton<ISmtpSettingsService, SmtpSettingsService>();
         services.AddSingleton<IEmailNotifier, SmtpEmailNotifier>();
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -35,6 +38,7 @@ public static class DependencyInjection
         }
 
         services.AddSingleton<IGpoDirectoryService, AdaptiveGpoDirectoryService>();
+        services.AddSingleton<IContainerDirectoryService, AdaptiveContainerDirectoryService>();
 
         return services;
     }

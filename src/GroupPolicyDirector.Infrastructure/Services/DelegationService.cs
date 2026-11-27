@@ -277,6 +277,38 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
                 });
             }
 
+            foreach (var container in store.Containers)
+            {
+                hints.Add(new DelegationScopeHint
+                {
+                    ScopeKind = DelegationScopeKind.Container,
+                    ScopeKey = container.ContainerKey,
+                    Label = $"{container.Kind}: {container.DisplayName}"
+                });
+            }
+
+            if (store.Containers.Count == 0)
+            {
+                hints.Add(new DelegationScopeHint
+                {
+                    ScopeKind = DelegationScopeKind.Container,
+                    ScopeKey = "OU=Workstations,DC=contoso,DC=local",
+                    Label = "Demo OU container (gpLink)"
+                });
+                hints.Add(new DelegationScopeHint
+                {
+                    ScopeKind = DelegationScopeKind.Container,
+                    ScopeKey = "DC=contoso,DC=local",
+                    Label = "Demo Domain container (gpLink)"
+                });
+                hints.Add(new DelegationScopeHint
+                {
+                    ScopeKind = DelegationScopeKind.Container,
+                    ScopeKey = "CN=Default-First-Site-Name,CN=Sites,CN=Configuration,DC=contoso,DC=local",
+                    Label = "Demo Site container (gpLink)"
+                });
+            }
+
             IReadOnlyList<DelegationScopeHint> result = hints;
             return Task.FromResult(result);
         }
@@ -352,6 +384,8 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
                 principals.Any(p => p.Equals(d.TrusteePrincipal, StringComparison.OrdinalIgnoreCase)) &&
                 d.Role == role &&
                 (d.ScopeKind == DelegationScopeKind.Gpo &&
+                 d.ScopeKey.Equals(productionGpoId, StringComparison.OrdinalIgnoreCase)
+                 || d.ScopeKind == DelegationScopeKind.Container &&
                  d.ScopeKey.Equals(productionGpoId, StringComparison.OrdinalIgnoreCase)
                  || d.ScopeKind == DelegationScopeKind.Ou)); // OU inheritance stub: any OU grant applies
         }
