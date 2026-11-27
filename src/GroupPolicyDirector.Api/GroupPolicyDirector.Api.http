@@ -1,0 +1,14 @@
+﻿### Health
+GET http://localhost:5080/api/health
+
+### Me
+GET http://localhost:5080/api/me
+
+### Register domain
+POST http://localhost:5080/api/domains
+Content-Type: application/json
+
+{
+  "dnsName": "contoso.local",
+  "netBiosName": "CONTOSO"
+}
