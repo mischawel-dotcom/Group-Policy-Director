@@ -66,6 +66,26 @@ body {
   color: var(--accent);
 }
 
+.actor-switch {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: end;
+}
+
+.actor-switch select {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  font: inherit;
+  min-width: 16rem;
+}
+
+.memberships {
+  margin: 0 0 0.35rem;
+}
+
 .banner {
   padding: 0.75rem 1rem;
   margin-bottom: 1rem;
@@ -187,14 +207,43 @@ button:hover {
   margin: 0;
 }
 
-.tree-label em {
+.tree-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.tree-label em,
+.tree-state {
   color: var(--muted);
   font-style: normal;
 }
 
+.stub-tag {
+  color: var(--warn);
+  font-style: normal;
+  font-size: 0.8em;
+}
+
+.tree-stub .tree-label {
+  opacity: 0.85;
+}
+
+.tree-value,
 .tree-label code {
   font-size: 0.85em;
   color: var(--accent-deep);
+}
+
+.tree-value-input,
+.tree select {
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--line);
+  background: #fff;
+  font: inherit;
+  max-width: 16rem;
 }
 
 .history li {
@@ -224,5 +273,10 @@ footer {
 @media (min-width: 900px) {
   .layout {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .settings-panel,
+  .workflow-panel {
+    grid-column: 1 / -1;
   }
 }
