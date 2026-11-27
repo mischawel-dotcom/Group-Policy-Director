@@ -83,4 +83,4 @@ Intune, Entra SSO, Tier-/ESAE-Gates, Auto-OOB-Reset, echte AD/GPMC-Schreibpfade,
 
 ## Lizenz / Marke
 
-Produktname: **Group Policy Director** (GPD). Neue Marke — kein CMGPI-Klon.
+Produktname: **Group Policy Director** (GPD). Neue Marke — kein Klon bestehender Referenz-Tools.

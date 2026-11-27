@@ -7,7 +7,7 @@ using GroupPolicyDirector.Infrastructure.Persistence;
 namespace GroupPolicyDirector.Infrastructure.Services;
 
 /// <summary>
-/// CMGPI-like delegation: Product Admin assigns OU/GPO object roles to AD admin groups.
+/// Referenz-Tools-like delegation: Product Admin assigns OU/GPO object roles to AD admin groups.
 /// Group membership evaluation at login uses stubs when not domain-joined.
 /// </summary>
 public sealed class DelegationService(GpdStore store, IAuditService audit) : IDelegationService
@@ -246,7 +246,7 @@ public sealed class DelegationService(GpdStore store, IAuditService audit) : IDe
 
             if (store.Delegations.Count == 0)
             {
-                // Demo OU scope: AD admin-role groups as trustees (CMGPI-like).
+                // Demo OU scope: AD admin-role groups as trustees (Referenz-Tools-like).
                 store.Delegations.AddRange(
                 [
                     new DelegationGrant
