@@ -8,6 +8,9 @@ using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Allow running as a Windows Service when installed via MSI / Setup.ps1.
+builder.Host.UseWindowsService();
+
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddGpdInfrastructure();
@@ -49,6 +52,15 @@ app.UseCors("UiDev");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// Production package: serve the Vite build from wwwroot next to the API.
+var wwwroot = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+if (Directory.Exists(wwwroot))
+{
+    app.UseDefaultFiles();
+    app.UseStaticFiles();
+    app.MapFallbackToFile("index.html");
+}
 
 app.Run();
 

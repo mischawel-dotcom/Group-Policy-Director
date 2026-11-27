@@ -21,3 +21,8 @@ Thumbs.db
 ## Secrets
 *.pfx
 appsettings.*.local.json
+
+## Packaging output
+artifacts/
+packaging/**/ProductFiles.wxs
+src/**/wwwroot/

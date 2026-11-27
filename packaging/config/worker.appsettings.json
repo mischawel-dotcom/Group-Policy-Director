@@ -1,0 +1,30 @@
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.Hosting.Lifetime": "Information"
+    }
+  },
+  "ConnectionStrings": {
+    "Gpd": "Server=REPLACE_SQL_HOST;Database=GroupPolicyDirector;Trusted_Connection=True;TrustServerCertificate=True"
+  },
+  "Gpd": {
+    "Ad": {
+      "ForceDryRun": true,
+      "ServiceAccount": "GPD-Svc"
+    }
+  },
+  "Oob": {
+    "AlertRecipients": [ "gpd-admins@contoso.local" ],
+    "ScanIntervalSeconds": 300
+  },
+  "Smtp": {
+    "Host": "REPLACE_SMTP_HOST",
+    "Port": 25,
+    "From": "gpd-noreply@contoso.local",
+    "UseSsl": false,
+    "User": "",
+    "Password": "",
+    "UseDefaultCredentials": false
+  }
+}
