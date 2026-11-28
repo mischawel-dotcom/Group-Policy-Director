@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX Toolset v5+/v7 product for Windows MSI builds (packaging/build.ps1).
+  Harvests artifacts/payload via Files + named bind path PayloadSource.
+  Linux/cloud MSI still uses Product.wxs + wixl (packaging/build.sh).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Group Policy Director"
+      Language="1031"
+      Version="0.1.0"
+      Manufacturer="Group Policy Director"
+      UpgradeCode="A7C3E9F1-4B2D-4E8A-9C1F-6D5B8A0E2F34"
+      Scope="perMachine">
+
+    <MajorUpgrade
+        DowngradeErrorMessage="Eine neuere Version von Group Policy Director ist bereits installiert." />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Feature Id="ProductFeature" Title="Group Policy Director" Level="1">
+      <Files Directory="INSTALLDIR" Include="!(bindpath.PayloadSource)\**" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLDIR" Name="Group Policy Director" />
+    </StandardDirectory>
+
+    <!--
+      Windows services: after msiexec, run elevated PowerShell:
+        & 'C:\Program Files\Group Policy Director\scripts\Install-Gpd.ps1'
+      Or use ZIP + scripts\Setup-Gpd.ps1.
+    -->
+  </Package>
+</Wix>

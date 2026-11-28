@@ -12,7 +12,7 @@ Grobes Lab-/On-Prem-Paket: **self-contained win-x64** API (inkl. UI) und Worker,
 | Optional: SMTP-Relay | für OOB-Mails |
 | Optional: Domänenbeitritt + GPMC | erst nötig für **Live-AD**; ohne Domäne läuft GPD im DryRun |
 | .NET Runtime | **nicht** nötig (self-contained) |
-| Build-Maschine (nur zum Erzeugen des Pakets) | .NET 9 SDK, Node.js 20+, optional `wixl` (msitools) für MSI unter Linux |
+| Build-Maschine (nur zum Erzeugen des Pakets) | .NET 9 SDK, Node.js 20+; MSI: WiX Toolset CLI v5+ (`wix`) unter Windows, oder `wixl` (msitools) unter Linux |
 
 ## Paket erzeugen
 
@@ -25,14 +25,15 @@ chmod +x packaging/build.sh
 ```
 
 ```powershell
-# Windows (ZIP; MSI optional separat mit WiX/wixl)
+# Windows (ZIP + MSI via WiX Toolset CLI `wix`)
+# Voraussetzung: winget install WiXToolset.WiXCLI ; wix eula accept wix7
 .\packaging\build.ps1
 ```
 
 Artefakte unter `artifacts/`:
 
 - `GroupPolicyDirector-0.1.0-win-x64.zip` — Payload + Skripte
-- `GroupPolicyDirector-0.1.0-win-x64.msi` — Dateiinstallation nach `%ProgramFiles%\Group Policy Director\` (wenn `wixl` verfügbar)
+- `GroupPolicyDirector-0.1.0-win-x64.msi` — Dateiinstallation nach `%ProgramFiles%\Group Policy Director\` (wenn `wix` bzw. `wixl` verfügbar)
 
 ## Installation
 

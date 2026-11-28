@@ -45,7 +45,13 @@ dotnet run --project src/GroupPolicyDirector.Worker
 Self-contained **win-x64** Publish von API (+ UI in `wwwroot`) und Worker, plus MSI/ZIP:
 
 ```bash
+# Linux / Cloud (ZIP + MSI via wixl)
 ./packaging/build.sh
+```
+
+```powershell
+# Windows (ZIP + MSI via WiX Toolset CLI)
+.\packaging\build.ps1
 ```
 
 Details (Voraussetzungen, Silent-Install, `ForceDryRun` vs. Live-AD): **[docs/install.md](docs/install.md)**.
